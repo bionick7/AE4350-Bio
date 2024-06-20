@@ -7,3 +7,6 @@ def color_from_html(html: int) -> rl.Color:
 BG = color_from_html(0x2C2B30)
 FG = color_from_html(0xEAEBDA)
 HIGHLIGHT = color_from_html(0xE3524D)
+
+RAD2DEG = 180/3.1415926535
+DEG2RAD = 1/RAD2DEG
