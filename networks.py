@@ -3,8 +3,6 @@ from typing import Callable
 
 import numpy as np
 
-
-
 class Layer:
     def __init__(self, p_size: int, p_fwd: Callable[[np.ndarray], np.ndarray], 
                  p_back: Callable[[np.ndarray], np.ndarray]):
@@ -23,11 +21,18 @@ class Layer:
         return cls(size, 
                    lambda x: np.maximum(x, 0), 
                    lambda f: np.asarray(np.single(f > 0)))  # cast boolean to array as step-function
+    
     @classmethod
     def sigmoid(cls, size: int) -> Layer:
         return cls(size, 
                    lambda x: 1 / np.exp(-x), 
                    lambda f: f * (1 - f))
+    
+    @classmethod
+    def tanh(cls, size: int) -> Layer:
+        return cls(size, 
+                   lambda x: np.tanh(x), 
+                   lambda f: 1-f*f)
 
 class Network:
     def __init__(self, p_architecture: list[Layer]):
@@ -42,47 +47,56 @@ class Network:
             self.activation_functions.append(layer.fwd)
             self.activation_backprops.append(layer.back)
             prev_layer_size = self.architecture[layer_index].size
-            self.weightdimensions.append(prev_layer_size*layer.size)
+            weights_in_layer = (prev_layer_size+1)*layer.size
+            self.weightdimensions.append(weights_in_layer)
             self.offsets.append(total_weights)
-            total_weights += prev_layer_size*layer.size
+            total_weights += weights_in_layer
 
         self.weights = np.random.uniform(-1, 1, total_weights)
+
+    def re_initialize(self, b_min: float, b_max: float, w_min: float, w_max: float):
+        for i in range(len(self.architecture)-1):
+            offs = self.offsets[i]
+            size = self.weightdimensions[i]
+            layer_size = self.architecture[i].size + 1
+            biases = size // layer_size
+            matrix = np.hstack((np.random.uniform(w_min, w_max, size - biases), 
+                                np.random.uniform(b_min, b_max, size // layer_size)))
+            self.weights[offs:offs+size] = matrix.flatten().copy()
 
     def get_weight_matrix(self, layer: int) -> np.ndarray:
         offs = self.offsets[layer]
         size = self.weightdimensions[layer]
-        return self.weights[offs : offs+size].reshape(-1, self.architecture[layer].size)
+        return self.weights[offs : offs+size].reshape(-1, self.architecture[layer].size+1)
 
     def forward(self, input: np.ndarray) -> np.ndarray:
-        fwd_phi = lambda x: x
-
         N_layers = len(self.architecture)
 
-        prev_layer = input.reshape(-1, 1)
+        prev_layer = np.append(input, 1).reshape(-1, 1)
         for i in range(N_layers-1):
             out_linear = self.get_weight_matrix(i) @ prev_layer
-            prev_layer = fwd_phi(out_linear)
+            prev_layer = np.append(self.architecture[i+1].fwd(out_linear), [[1]], axis=0)
 
-        return prev_layer
+        return prev_layer[:-1]
 
-    def get_gradients(self, input: np.ndarray, expected: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def get_gradients(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         mat_input = input.reshape(-1, 1)
         N_layers = len(self.architecture)
 
         layers = [np.zeros(0)]*N_layers
-        layers[0] = mat_input
+        layers[0] = np.append(mat_input, [[1]], axis=0)
         for i in range(N_layers-1):
             out_linear = self.get_weight_matrix(i) @ layers[i]
-            layers[i+1] = self.architecture[i+1].fwd(out_linear)  # RELU
+            layers[i+1] = np.append(self.architecture[i+1].fwd(out_linear), [[1]], axis=0)
             
-        output = layers[-1]
-        error = output - expected.reshape(-1, 1)
+        output = layers[-1][:-1]
 
         # Gradient w.r.t layers
         dy_dv = [np.zeros(0)]*N_layers
         dy_dv[-1] = np.diag(self.architecture[-1].back(output).flatten())
         for i in range(N_layers-2, -1, -1):
-            dy_dv[i] = dy_dv[i+1] @ self.get_weight_matrix(i) * self.architecture[i].back(layers[i]).T
+            activation_derivative = self.architecture[i].back(layers[i][:-1]).T
+            dy_dv[i] = (dy_dv[i+1] @ self.get_weight_matrix(i))[:,:-1] * activation_derivative
             
         # Gradient w.r.t weights
         dy_dw = np.zeros((len(output), len(self.weights)))
@@ -92,58 +106,120 @@ class Network:
             for j in range(len(output)):
                 dy_dw[j,offs:offs+weight_size] = (previous @ dy_dv[i+1][j:j+1]).T.flatten()
         
-        return error, dy_dw
-        #error2 = clone.forward(input) - expected
-        #E2 = .5 * np.dot(error2.flatten(), error2.flatten())
-        #if E2 < E:
-        #    self.copy(clone)
-        #    return E2
-        #else:
-        #    clone.copy(self)
-        #    return E
-            
+        return output, dy_dw
 
-def critic_fwd_propagation(net: Network, input: np.ndarray) -> float:
-    hidden_linear = net.weights[0] @ input
-    hidden = np.maximum(hidden_linear, 0)  # RELU
-    output_linear = net.weights[1] @ hidden
-    output = np.maximum(output_linear, 0)  # RELU
-    return output[0]
+def test_gradients(nn: Network, show:bool=False) -> bool:
+    nn = Network([
+        Layer.linear(1),
+        Layer.tanh(5),
+        #Layer.relu(2),
+        #Layer.relu(2),
+        Layer.linear(1),
+    ])
 
+    inp = np.random.uniform(-7, 7, (1,))
+    output, J = nn.get_gradients(inp)
+    EPSILON = 1e-2
+    for output_index in range(len(J)):
+        for weight_index in range(len(J[output_index])):
+            w = nn.weights[weight_index]
+            nn.weights[weight_index] = w + EPSILON
+            y_plus = nn.forward(inp)[output_index,0]
+            nn.weights[weight_index] = w - EPSILON
+            y_minus = nn.forward(inp)[output_index,0]
+            nn.weights[weight_index] = w
+            finite_diff = (y_plus - y_minus) / (2*EPSILON)
+            if show:
+                print(finite_diff, J[output_index,weight_index])
+            discrepency = abs(finite_diff - J[output_index,weight_index])
+            if discrepency > 1e-3:
+                print(f"Discrepency ({discrepency}) to finite differencees found:")
+                return False
 
-def critic_back_propagation(net: Network, input: np.ndarray, expected: float):
-    input = input.reshape(-1, 1)
-    hidden_linear = net.weights[0] @ input
-    hidden = np.maximum(hidden_linear, 0)  # RELU
-    output_linear = net.weights[1] @ hidden
-    output = np.maximum(output_linear, 0)  # RELU
-
-    error = output - expected
-    E = .5 * (error)**2
-
-    dE_dy = (error - 1)
-    dE_dv2 = dE_dy * np.single(output > 0)
-    dE_dv1 = (dE_dv2 @ net.weights[1]).T * np.single(hidden > 0)
-    dE_dw_2 = dE_dv2 @ hidden.T
-    dE_dw_1 = dE_dv1 @ input.T
-
-    net.weights[0] += dE_dw_1 * E * 0.1
-    net.weights[1] += dE_dw_2 * E * 0.1
-
+    return True
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
     nn = Network([
-        Layer.linear(2),
-        Layer.linear(3),
-        Layer.linear(2),
+        Layer.linear(1),
+        Layer.tanh(5),
+        #Layer.relu(2),
+        #Layer.relu(2),
+        Layer.linear(1),
     ])
-    #critic_back_propagation(nn, np.array([0, 0]), 0)
-    eta = 2
-    for i in range(10):
-        inp = np.random.uniform(-1, 1, 2)
-        e, J = nn.get_gradients(inp, np.array([sum(inp), inp[0]-inp[1]]))
-        E = .5 * (e.T@e)
-        nn.weights -= np.linalg.solve(J.T@J - 0.1 * np.eye(J.shape[1]), J.T@e).flatten()
-        eta *= 0.9
-    #nn.train(np.array([1, 1]), 0)
-    print(nn.weights)
+
+    test_gradients(nn)
+
+    nn.re_initialize(-6, 6, -1, 1)
+
+    epochs = 500
+    epoch_size = 20
+
+    learning_xx = np.linspace(-7, 7, epoch_size)
+    learning_progress = np.zeros(epochs)
+
+    prev_epoch_error = 1e4
+
+    for epoch in range(epochs):
+        eta = 2
+        avg_error = 0
+        cum_delta_weights = np.zeros(len(nn.weights))
+        for index in range(epoch_size):
+            #inp = np.random.uniform(-7, 7, 1)
+            inp = learning_xx[index]
+            expected = np.sin(inp)
+            output, J = nn.get_gradients(inp)
+            e = output - expected.reshape(-1, 1)
+            #delta_weights = -np.linalg.solve(J.T@J - 0.1 * np.eye(J.shape[1]), J.T@e).flatten()
+            delta_weights = (J.T@e).flatten() * -0.02
+            #nn.weights += delta_weights
+            cum_delta_weights += delta_weights
+            E = .5 * (e.T@e)[0,0]
+            avg_error += E/epoch_size
+
+        nn.weights += cum_delta_weights
+        
+        avg_error_2 = 0
+        for index in range(epoch_size):
+            #inp = np.random.uniform(-7, 7, 1)
+            inp = learning_xx[index]
+            expected = np.sin(inp)
+            e = nn.forward(inp) - expected.reshape(-1, 1)
+            E = .5 * (e.T@e)[0,0]
+            avg_error_2 += E/epoch_size
+        
+        if avg_error_2 > avg_error:  # Discard if the error increases
+            nn.weights -= cum_delta_weights
+            eta *= 0.95
+        else:
+            prev_epoch_error = avg_error
+            eta /= 0.95
+        learning_progress[epoch] = min(avg_error, prev_epoch_error)
+        #print(min(E2, E))
+    
+    fig1 = plt.figure()
+    ax1 = fig1.add_subplot(211)
+    sample_xx = np.linspace(-7, 7, 100)
+    sample_yy = np.zeros(100)
+    for i in range(100):
+        sample_yy[i] = nn.forward(sample_xx[i])[0,0]
+    ax1.plot(sample_xx, sample_yy)
+    ax1.plot(sample_xx, np.sin(sample_xx))
+    ax1.scatter(learning_xx, np.sin(learning_xx))
+
+    ax2 = fig1.add_subplot(212)
+    ax2.plot(learning_progress)
+    ax2.set_ylim((0, 1))
+
+    plt.show()
+
+    #for i in range(10):
+    #    inp = learning_xx[index]
+    #    expected = np.sin(inp)
+    #    out = nn.forward(inp)
+    #    e = nn.forward(inp) - expected.reshape(-1, 1)
+    #    E = .5 * (e.T@e)[0,0]
+    #    print(E)
+    print(nn.get_weight_matrix(0))
+        
