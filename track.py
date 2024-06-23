@@ -15,7 +15,8 @@ class TrackWall:
 
     def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> np.ndarray:
         return np.ones(len(ray_directions)) * np.inf
-    
+
+
 class TrackWallLine(TrackWall):
     def __init__(self, p_start: np.ndarray, p_end: np.ndarray, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -42,6 +43,7 @@ class TrackWallLine(TrackWall):
     
     def __repr__(self) -> str:
         return f"[Linear wall from ({self.start[0]}, {self.start[1]}) -> ({self.end[0]}, {self.end[1]})]"
+
 
 class TrackWallArc(TrackWall):
     def __init__(self, p_center: np.ndarray, p_a1: float, p_a2: float,
@@ -163,6 +165,7 @@ class TrackSegment:
     def get_track_coordinates(self, pt: np.ndarray) -> np.ndarray:
         raise NotImplementedError("Not implemented in base class")
 
+
 class TrackSegmentLine(TrackSegment):
     def __init__(self, p_start: np.ndarray, p_end: np.ndarray, track_width: float) -> None:
         self.start = p_start
@@ -222,6 +225,7 @@ class Track:
     def __init__(self, load_path: str|None=None) -> None:
         self.track_width = 90
         self.segments = []
+        self.starting_point = np.zeros(2)
         if load_path == None:
             # Simple circle
             self.segments = [
@@ -238,6 +242,7 @@ class Track:
                 args = np.array([int(x.strip()) for x in args_str])
                 if op == '.':
                     active_point = args
+                    self.starting_point = args
                 elif op == '|':
                     pt = args[:2]
                     self.segments.append(TrackSegmentLine(active_point, pt, self.track_width))
@@ -341,11 +346,7 @@ class Track:
             for debugging purposes
         '''
         segment_index = int(state[0,4]) % len(self.segments)
-        #self.segments[segment_index].draw()
-        #p_test = np.array([np.sin(time) * 250, -100])
-        #p_test = np.array([np.cos(time), np.sin(time)]) * 100
         p_test = state[0,:2]
-        #rl.draw_circle(10, -100, 4.0, HIGHLIGHT)
         N_rays = 64
         angles = np.linspace(0, np.pi*2, N_rays+1)[:-1]
         rays = np.zeros((N_rays, 2))
