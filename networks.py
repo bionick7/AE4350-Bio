@@ -35,7 +35,10 @@ class Layer:
                    lambda f: 1-f*f)
 
 class Network:
-    def __init__(self, p_architecture: list[Layer]):
+    def __init__(self, p_architecture: list[Layer], 
+                 w_clamp: tuple[float, float]=(-1,1), b_clamp: tuple[float, float]=(-1,1)):
+        self.w_min, self.w_max = w_clamp
+        self.b_min, self.b_max = b_clamp
         self.architecture = p_architecture
         self.weightdimensions: list[int] = []
         self.offsets: list[int] = []
@@ -52,17 +55,29 @@ class Network:
             self.offsets.append(total_weights)
             total_weights += weights_in_layer
 
-        self.weights = np.random.uniform(-1, 1, total_weights)
+        self.weights = np.zeros(total_weights)
+        self._initialize()
 
-    def re_initialize(self, b_min: float, b_max: float, w_min: float, w_max: float):
+    def _initialize(self) -> None:
         for i in range(len(self.architecture)-1):
             offs = self.offsets[i]
             size = self.weightdimensions[i]
             layer_size = self.architecture[i].size + 1
             biases = size // layer_size
-            matrix = np.hstack((np.random.uniform(w_min, w_max, size - biases), 
-                                np.random.uniform(b_min, b_max, size // layer_size)))
+            matrix = np.hstack((np.random.uniform(self.w_min, self.w_max, size - biases), 
+                                np.random.uniform(self.b_min, self.b_max, size // layer_size)))
             self.weights[offs:offs+size] = matrix.flatten().copy()
+
+    def update_weights(self, delta: np.ndarray) -> None:
+        self.weights += delta
+        for i in range(len(self.architecture)-1):
+            offs = self.offsets[i]
+            size = self.weightdimensions[i]
+            layer_size = self.architecture[i].size + 1
+            matrix = self.weights[offs:offs+size].reshape(-1, layer_size)
+            matrix[:, -1] = np.maximum(np.minimum(matrix[:, -1], self.b_max), self.b_min)
+            matrix[:,:-1] = np.maximum(np.minimum(matrix[:,:-1], self.w_max), self.w_min)
+            self.weights[offs:offs+size] = matrix.flatten()
 
     def get_weight_matrix(self, layer: int) -> np.ndarray:
         offs = self.offsets[layer]
@@ -108,14 +123,8 @@ class Network:
         
         return output, dy_dw
 
+
 def test_gradients(nn: Network, show:bool=False) -> bool:
-    nn = Network([
-        Layer.linear(1),
-        Layer.tanh(5),
-        #Layer.relu(2),
-        #Layer.relu(2),
-        Layer.linear(1),
-    ])
 
     inp = np.random.uniform(-7, 7, (1,))
     output, J = nn.get_gradients(inp)
@@ -138,22 +147,11 @@ def test_gradients(nn: Network, show:bool=False) -> bool:
 
     return True
 
-if __name__ == "__main__":
+
+def sin_test(nn: Network) -> None:
     import matplotlib.pyplot as plt
 
-    nn = Network([
-        Layer.linear(1),
-        Layer.tanh(5),
-        #Layer.relu(2),
-        #Layer.relu(2),
-        Layer.linear(1),
-    ])
-
-    test_gradients(nn)
-
-    nn.re_initialize(-6, 6, -1, 1)
-
-    epochs = 500
+    epochs = 100
     epoch_size = 20
 
     learning_xx = np.linspace(-7, 7, epoch_size)
@@ -168,17 +166,18 @@ if __name__ == "__main__":
         for index in range(epoch_size):
             #inp = np.random.uniform(-7, 7, 1)
             inp = learning_xx[index]
+            inp = np.random.uniform(-7, 7, (1,))
             expected = np.sin(inp)
             output, J = nn.get_gradients(inp)
             e = output - expected.reshape(-1, 1)
-            #delta_weights = -np.linalg.solve(J.T@J - 0.1 * np.eye(J.shape[1]), J.T@e).flatten()
-            delta_weights = (J.T@e).flatten() * -0.02
-            #nn.weights += delta_weights
+            mu = min(0.99, max(0.01, 1 - epoch / 20))
+            delta_weights = -np.linalg.solve(J.T@J - mu * np.eye(J.shape[1]), J.T@e).flatten()
+            nn.update_weights(delta_weights)
             cum_delta_weights += delta_weights
             E = .5 * (e.T@e)[0,0]
             avg_error += E/epoch_size
 
-        nn.weights += cum_delta_weights
+        #nn.weights += cum_delta_weights
         
         avg_error_2 = 0
         for index in range(epoch_size):
@@ -190,7 +189,7 @@ if __name__ == "__main__":
             avg_error_2 += E/epoch_size
         
         if avg_error_2 > avg_error:  # Discard if the error increases
-            nn.weights -= cum_delta_weights
+            #nn.weights -= cum_delta_weights
             eta *= 0.95
         else:
             prev_epoch_error = avg_error
@@ -221,5 +220,17 @@ if __name__ == "__main__":
     #    e = nn.forward(inp) - expected.reshape(-1, 1)
     #    E = .5 * (e.T@e)[0,0]
     #    print(E)
-    print(nn.get_weight_matrix(0))
+
+if __name__ == "__main__":
+    nn = Network([
+        Layer.linear(1),
+        Layer.tanh(10),
+        #Layer.relu(2),
+        #Layer.relu(2),
+        Layer.linear(1)
+    ], (-1, 1), (-7, 7))
+
+    test_gradients(nn)
+    sin_test(nn)
+
         
