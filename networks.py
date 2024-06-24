@@ -20,7 +20,8 @@ class Layer:
     def relu(cls, size: int) -> Layer:
         return cls(size, 
                    lambda x: np.maximum(x, 0), 
-                   lambda f: np.asarray(np.single(f > 0)))  # cast boolean to array as step-function
+                   # cast boolean to array as step-function
+                   lambda f: np.asarray(np.single(f > 0)))
     
     @classmethod
     def sigmoid(cls, size: int) -> Layer:
@@ -84,7 +85,7 @@ class Network:
         size = self.weightdimensions[layer]
         return self.weights[offs : offs+size].reshape(-1, self.architecture[layer].size+1)
 
-    def forward(self, input: np.ndarray) -> np.ndarray:
+    def eval(self, input: np.ndarray) -> np.ndarray:
         N_layers = len(self.architecture)
 
         prev_layer = np.append(input, 1).reshape(-1, 1)
@@ -124,18 +125,19 @@ class Network:
         return output, dy_dw
 
 
-def test_gradients(nn: Network, show:bool=False) -> bool:
+def check_gradients(nn: Network, show:bool=False) -> bool:
 
-    inp = np.random.uniform(-7, 7, (1,))
+    input_dim = nn.architecture[0].size
+    inp = np.random.uniform(-7, 7, (input_dim,))
     output, J = nn.get_gradients(inp)
     EPSILON = 1e-2
     for output_index in range(len(J)):
         for weight_index in range(len(J[output_index])):
             w = nn.weights[weight_index]
             nn.weights[weight_index] = w + EPSILON
-            y_plus = nn.forward(inp)[output_index,0]
+            y_plus = nn.eval(inp)[output_index,0]
             nn.weights[weight_index] = w - EPSILON
-            y_minus = nn.forward(inp)[output_index,0]
+            y_minus = nn.eval(inp)[output_index,0]
             nn.weights[weight_index] = w
             finite_diff = (y_plus - y_minus) / (2*EPSILON)
             if show:
@@ -184,7 +186,7 @@ def sin_test(nn: Network) -> None:
             #inp = np.random.uniform(-7, 7, 1)
             inp = learning_xx[index]
             expected = np.sin(inp)
-            e = nn.forward(inp) - expected.reshape(-1, 1)
+            e = nn.eval(inp) - expected.reshape(-1, 1)
             E = .5 * (e.T@e)[0,0]
             avg_error_2 += E/epoch_size
         
@@ -202,7 +204,7 @@ def sin_test(nn: Network) -> None:
     sample_xx = np.linspace(-7, 7, 100)
     sample_yy = np.zeros(100)
     for i in range(100):
-        sample_yy[i] = nn.forward(sample_xx[i])[0,0]
+        sample_yy[i] = nn.eval(sample_xx[i])[0,0]
     ax1.plot(sample_xx, sample_yy)
     ax1.plot(sample_xx, np.sin(sample_xx))
     ax1.scatter(learning_xx, np.sin(learning_xx))
@@ -225,12 +227,10 @@ if __name__ == "__main__":
     nn = Network([
         Layer.linear(1),
         Layer.tanh(10),
-        #Layer.relu(2),
-        #Layer.relu(2),
         Layer.linear(1)
     ], (-1, 1), (-7, 7))
 
-    test_gradients(nn)
+    check_gradients(nn)
     sin_test(nn)
 
         

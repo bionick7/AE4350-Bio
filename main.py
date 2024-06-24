@@ -1,6 +1,7 @@
 import numpy as np
 import pyray as rl
 
+from actor_critic import *
 from track import Track
 from common import *
 
@@ -46,6 +47,8 @@ def main():
 
     camera = rl.Camera2D(rl.Vector2(500, 300), rl.Vector2(0, 0), 0, 1)
 
+    adhdp = ADHDP()
+
     gamma = 0
     time = 0
 
@@ -62,16 +65,12 @@ def main():
 
         inp = track.get_input(state)
         outp = actor.eval(inp)
-        J = critic.eval(inp, outp)
-        J_tgt = 1000
         r = state[:,5] / time
-
-        actor.backprop(.5 * (J - J_tgt)**2)
-        critic.backprop(.5 * (J_prev - (gamma * J - r))**2)
+        
+        update_actor_critic(actor, critic, r)
 
         state = track.simulation_step(state, outp, dt)
 
-        J_prev = J
         
         # 'Player' controls speed directly
         #state[0,2] = rl.get_gamepad_axis_movement(0, 0) * 20
