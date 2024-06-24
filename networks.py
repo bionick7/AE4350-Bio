@@ -24,9 +24,16 @@ class Layer:
                    lambda f: np.asarray(np.single(f > 0)))
     
     @classmethod
+    def clamped(cls, size: int) -> Layer:
+        return cls(size, 
+                   lambda x: np.minimum(np.maximum(x, -1), 1), 
+                   # cast boolean to array as step-function
+                   lambda f: np.asarray(np.single(np.abs(f) < 1)))
+    
+    @classmethod
     def sigmoid(cls, size: int) -> Layer:
         return cls(size, 
-                   lambda x: 1 / np.exp(-x), 
+                   lambda x: 1 / (1 + np.exp(-x)), 
                    lambda f: f * (1 - f))
     
     @classmethod

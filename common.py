@@ -10,3 +10,5 @@ HIGHLIGHT = color_from_html(0xE3524D)
 
 RAD2DEG = 180/3.1415926535
 DEG2RAD = 1/RAD2DEG
+
+COLOR_TYPE = type(BG)  # since python thinks rl.Color is a function smh

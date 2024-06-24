@@ -228,10 +228,12 @@ class Track:
         self.starting_point = np.zeros(2)
         if load_path == None:
             # Simple circle
+            pt1, pt2 = np.array([0, -100]), np.array([0, 100])
             self.segments = [
-                TrackSegmentArc(np.array([0, -100]), np.array([0,  100]), 100, self.track_width),
-                TrackSegmentArc(np.array([0,  100]), np.array([0, -100]), 100, self.track_width)
+                TrackSegmentArc(pt1, pt2, 100, self.track_width),
+                TrackSegmentArc(pt2, pt1, 100, self.track_width)
             ]
+            self.starting_point = pt1
         else:
             with open(load_path, 'rt') as f:
                 lines = f.readlines()
@@ -258,12 +260,11 @@ class Track:
         for i in range(N):
             self.adjacencies.append([(i+1) % N, (i-1) % N])
 
-    def get_input(self, states: np.ndarray) -> np.ndarray:
+    def get_input(self, states: np.ndarray, N_rays: int) -> np.ndarray:
         ''' Returns sensor readings evaluated at a certain point 
             states: Nx4 array of generation states
             returns: Nx? array of sensor positions corresponding to positions'''
         N = len(states)
-        N_rays = 16
         inp = np.zeros((N, N_rays))
         angles = np.linspace(0, np.pi*2, N_rays+1)[:-1]
         rays = np.zeros((N_rays, 2))
@@ -279,7 +280,7 @@ class Track:
             states: Nx4 array of generation states
             outp: Nx2 array with accelerations
             returns: Nx? array of sensor positions corresponding to positions'''
-        step = states[:,2:4] * dt
+        step = states[:,2:4] * dt + outp * dt*dt*.5
         states[:,2:4] += outp * dt
 
         step_norms = np.linalg.norm(step, axis=1) + 1e-9  # avoid 0-division
@@ -333,21 +334,25 @@ class Track:
 
         return collisions
 
-    def show(self, state: np.ndarray):
+    def show(self, state: np.ndarray, c=HIGHLIGHT):
         for seg in self.segments:
             seg.draw()
 
-        for pos in state[:,:2]:
-            rl.draw_circle(int(pos[0]), int(pos[1]), 4.0, HIGHLIGHT)
+        for i, pos in enumerate(state[:,:2]):
+            if isinstance(c, COLOR_TYPE):
+                color = c
+            elif isinstance(c, np.ndarray):
+                c = (c*255.99).astype(np.uint8)
+                color = rl.Color(c[i,0], c[i,1], c[i,2], 255)
+            rl.draw_circle(int(pos[0]), int(pos[1]), 4.0, color)
 
-    def show_player_rays(self, state: np.ndarray):
+    def show_player_rays(self, state: np.ndarray, N_rays: int):
         '''
             Player refers to the first state, which can be controlled manually
             for debugging purposes
         '''
         segment_index = int(state[0,4]) % len(self.segments)
         p_test = state[0,:2]
-        N_rays = 64
         angles = np.linspace(0, np.pi*2, N_rays+1)[:-1]
         rays = np.zeros((N_rays, 2))
         rays[:,0] = np.cos(angles)
