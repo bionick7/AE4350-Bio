@@ -164,7 +164,12 @@ class TrackSegment:
     
     def get_track_coordinates(self, pt: np.ndarray) -> np.ndarray:
         raise NotImplementedError("Not implemented in base class")
+    
+    def get_tangent_at(self, pts: np.ndarray) -> np.ndarray:
+        raise NotImplementedError("Not implemented in base class")
 
+    def evaluate_points(self, evals: np.ndarray) -> np.ndarray:
+        raise NotImplementedError("Not implemented in base class")
 
 class TrackSegmentLine(TrackSegment):
     def __init__(self, p_start: np.ndarray, p_end: np.ndarray, track_width: float) -> None:
@@ -189,6 +194,14 @@ class TrackSegmentLine(TrackSegment):
         closest = self.start + self._normalized_dir * along
         across = np.linalg.norm(pt - closest)
         return np.array([along, across])
+    
+    def get_tangent_at(self, pts: np.ndarray) -> np.ndarray:
+        res = pts*0
+        res[:] = self._normalized_dir
+        return res
+    
+    def evaluate_points(self, evals: np.ndarray) -> np.ndarray:
+        return self.start + self.length * evals[:,np.newaxis] * self._normalized_dir
 
 
 class TrackSegmentArc(TrackSegment):
@@ -219,11 +232,27 @@ class TrackSegmentArc(TrackSegment):
         across = np.linalg.norm(pt - closest)
         
         return np.array([along, across])
+    
+    def get_tangent_at(self, pts: np.ndarray) -> np.ndarray:
+        rel_pts = pts - self._center
+        res = pts*0
+        mult = 1 / np.linalg.norm(rel_pts, axis=1)
+        if self._a1 > self._a2: mult *= -1
+        res[:,0] = -rel_pts[:,1] * mult
+        res[:,1] = rel_pts[:,0] * mult
+        return res
+    
+    def evaluate_points(self, evals: np.ndarray) -> np.ndarray:
+        angles = self._a1 * (1 - evals) + self._a2 * evals
+        res = np.zeros((len(evals), 2))
+        res[:,0] = self._center[0] + np.cos(angles) * self._radius
+        res[:,1] = self._center[1] + np.sin(angles) * self._radius
+        return res
 
 
 class Track:
     def __init__(self, load_path: str|None=None) -> None:
-        self.track_width = 90
+        self.track_width = 40
         self.segments = []
         self.starting_point = np.zeros(2)
         if load_path == None:
@@ -287,8 +316,8 @@ class Track:
         collision_dirs = (step.T / step_norms.T).T
 
         for state_index, state in enumerate(states):
-            segment_index = int(state[4] % len(self.segments))
-            lap_index = int(state[4]) // len(self.segments)
+            segment_index = int(floor(state[4] % len(self.segments)))
+            lap_index = int(floor(state[4]) // len(self.segments))
             collision_dist = self.check_collision_rays(segment_index, state[:2], collision_dirs[np.newaxis, state_index])[0]
             if step_norms[state_index] < collision_dist:
                 # No collision
@@ -334,9 +363,18 @@ class Track:
 
         return collisions
 
+    def get_path_dir(self, state: np.ndarray) -> np.ndarray:
+        segment_indices = (np.floor(state[:,4] % len(self.segments))).astype(np.int32)
+        res = np.zeros((len(state), 2))
+        for i in range(len(self.segments)):
+            res[segment_indices==i] = self.segments[i].get_tangent_at(state[segment_indices==i,:2])
+        return res
+
     def show(self, state: np.ndarray, c=HIGHLIGHT):
         for seg in self.segments:
             seg.draw()
+
+        path_dirs = self.get_path_dir(state)
 
         for i, pos in enumerate(state[:,:2]):
             if isinstance(c, COLOR_TYPE):
@@ -345,13 +383,23 @@ class Track:
                 c = (c*255.99).astype(np.uint8)
                 color = rl.Color(c[i,0], c[i,1], c[i,2], 255)
             rl.draw_circle(int(pos[0]), int(pos[1]), 4.0, color)
+            
+            pos2 = pos + state[i,2:4]
+            rl.draw_line(int(pos[0]), int(pos[1]), int(pos2[0]), int(pos2[1]), color)
+
+    def evaluate_path(self, spawns: np.ndarray) -> np.ndarray:
+        positions = np.zeros((len(spawns), 2))
+        segment_indecies = (np.floor(spawns) % len(self.segments)).astype(np.int32)
+        for i, segment in enumerate(self.segments):
+            positions[segment_indecies==i] = segment.evaluate_points(spawns[segment_indecies==i]-i)
+        return positions
 
     def show_player_rays(self, state: np.ndarray, N_rays: int):
         '''
             Player refers to the first state, which can be controlled manually
             for debugging purposes
         '''
-        segment_index = int(state[0,4]) % len(self.segments)
+        segment_index = int(floor(state[0,4])) % len(self.segments)
         p_test = state[0,:2]
         angles = np.linspace(0, np.pi*2, N_rays+1)[:-1]
         rays = np.zeros((N_rays, 2))
