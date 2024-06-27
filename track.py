@@ -252,7 +252,7 @@ class TrackSegmentArc(TrackSegment):
 
 class Track:
     def __init__(self, load_path: str|None=None) -> None:
-        self.track_width = 40
+        self.track_width = 90
         self.segments = []
         self.starting_point = np.zeros(2)
         if load_path == None:
@@ -289,7 +289,7 @@ class Track:
         for i in range(N):
             self.adjacencies.append([(i+1) % N, (i-1) % N])
 
-    def get_input(self, states: np.ndarray, N_rays: int) -> np.ndarray:
+    def get_input(self, states: np.ndarray, N_rays: int, R: np.ndarray=np.eye(2)) -> np.ndarray:
         ''' Returns sensor readings evaluated at a certain point 
             states: Nx4 array of generation states
             returns: Nx? array of sensor positions corresponding to positions'''
@@ -297,10 +297,12 @@ class Track:
         inp = np.zeros((N, N_rays))
         angles = np.linspace(0, np.pi*2, N_rays+1)[:-1]
         rays = np.zeros((N_rays, 2))
-        rays[:,0] = np.cos(angles)
-        rays[:,1] = np.sin(angles)
+
+        rays[:,0] = R[0,0]*np.cos(angles) + R[0,1]*np.sin(angles)
+        rays[:,1] = R[1,0]*np.cos(angles) + R[1,1]*np.sin(angles)
+
         for state_index, state in enumerate(states):
-            segment_index = int(state[4] % len(self.segments))
+            segment_index = int(floor(state[4] % len(self.segments)))
             inp[state_index] = self.check_collision_rays(segment_index, state[:2], rays)
         return inp
     

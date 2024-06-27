@@ -27,7 +27,6 @@ class GAPopulation:
         if fitness[best_index] > self.best_val:
             self.best_val = fitness[best_index]
             self.best_gene = best_gene_in_generation
-        
 
         cumulative_fitness = np.cumsum(fitness - min(fitness)) / np.sum(fitness - min(fitness))
         
@@ -35,8 +34,10 @@ class GAPopulation:
         extermination_indices = argpart[:-self.survivor_count]
         survivor_indices = argpart[-self.survivor_count:]
         for index in extermination_indices:
-            parent_a = np.count_nonzero(cumulative_fitness < random())
-            parent_b = np.count_nonzero(cumulative_fitness < random())
+            #parent_a = np.count_nonzero(cumulative_fitness < random())
+            #parent_b = np.count_nonzero(cumulative_fitness < random())
+            parent_a = survivor_indices[randint(0, self.survivor_count-1)]
+            parent_b = survivor_indices[randint(0, self.survivor_count-1)]
             crossover_point = randint(0, self.genes_per_specimen - 1)
             # Kinda equivalent to combining the binary strings
             #self.genepool[index,:crossover_point] = self.genepool[parent_a,:crossover_point]
@@ -71,19 +72,22 @@ class GAPopulation:
 
 
 class GANeuralNets(GAPopulation):
-    def __init__(self, population: int, p_architecture: list[Layer], p_scale: float=1, **kwargs):
+    def __init__(self, population: int, p_architecture: list[Layer], **kwargs):
         self.networks = []
-        self.scale = p_scale
+        self.weight_scale = kwargs.get("weight_scale", 1)
+        self.bias_scale = kwargs.get("bias_scale", self.weight_scale)
+        self.extra_genomes_count = kwargs.get("extra_genomes", 0)
         self.architecture = p_architecture
         for i in range(population):
-            self.networks.append(Network(p_architecture, (-p_scale, p_scale), (-p_scale, p_scale)))
+            self.networks.append(Network(p_architecture, 
+                (-self.weight_scale, self.weight_scale), (-self.bias_scale, self.bias_scale)))
         
-        super().__init__(population, len(self.networks[0].weights), **kwargs)
+        super().__init__(population, len(self.networks[0].weights) + self.extra_genomes_count, **kwargs)
+        self.filter = self.genepool[:,0] == self.genepool[:,0]
     
     def update_networks(self) -> None:
         for i in range(self.population_count):
-            self.networks[i].weights = self.genepool[i] * self.scale
-
+            self.networks[i].weights = self.genepool[i] * self.weight_scale
 
     def genetic_selection(self, fitness: np.ndarray) -> None:
         super().genetic_selection(fitness)
@@ -91,19 +95,32 @@ class GANeuralNets(GAPopulation):
 
     def process_inputs(self, inputs: np.ndarray) -> np.ndarray:
         outputs = np.zeros((len(inputs), self.networks[0].architecture[-1].size))
-        for i, inp in enumerate(inputs):
-            outputs[i] = self.networks[i].eval(inp).flatten()
+        input_index = 0
+        for i, net in enumerate(self.networks):
+            if self.filter[i]:
+                outputs[input_index] = net.eval(inputs[input_index]).flatten()
+                input_index += 1
         return outputs
     
     def get_best_network(self) -> Network:
-        res = Network(self.architecture, (-self.scale, self.scale), (-self.scale, self.scale))
-        res.weights = self.best_gene * self.scale
+        res = Network(self.architecture, (-self.weight_scale, self.weight_scale), (-self.weight_scale, self.weight_scale))
+        res.weights = self.best_gene * self.weight_scale
         return res
     
     def load(self, filepath: str) -> None:
         super().load(filepath)
         self.update_networks()
 
+    def elite_sample(self, population: int) -> GANeuralNets:
+        res = GANeuralNets(population, self.architecture, 
+                           weight_scale=self.weight_scale, bias_scale=self.bias_scale)
+        for i in range(population):
+            res.networks[i] = self.get_best_network()
+        return res
+    
+    @property
+    def extra_genomes(self) -> np.ndarray:
+        return self.genepool[self.filter,-self.extra_genomes_count:]
 
 
 def test_ga():
