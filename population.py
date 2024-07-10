@@ -38,13 +38,14 @@ class GAPopulation:
             #parent_b = np.count_nonzero(cumulative_fitness < random())
             parent_a = survivor_indices[randint(0, self.survivor_count-1)]
             parent_b = survivor_indices[randint(0, self.survivor_count-1)]
-            crossover_point = randint(0, self.genes_per_specimen - 1)
+            
             # Kinda equivalent to combining the binary strings
+            #crossover_point = randint(0, self.genes_per_specimen - 1)
             #self.genepool[index,:crossover_point] = self.genepool[parent_a,:crossover_point]
             #self.genepool[index,crossover_point:] = self.genepool[parent_b,crossover_point:]
             #self.genepool[index,crossover_point] += np.random.uniform(-1, 1, 1)[0]
-            selector = np.random.random_sample(self.genes_per_specimen) > 0.5
 
+            selector = np.random.random_sample(self.genes_per_specimen) > 0.5
             self.genepool[index, selector] = self.genepool[parent_a, selector]
             self.genepool[index, np.logical_not(selector)] = self.genepool[parent_b, np.logical_not(selector)]
         
@@ -73,11 +74,11 @@ class GAPopulation:
 
 class GANeuralNets(GAPopulation):
     def __init__(self, population: int, p_architecture: list[Layer], **kwargs):
-        self.networks = []
         self.weight_scale = kwargs.get("weight_scale", 1)
         self.bias_scale = kwargs.get("bias_scale", self.weight_scale)
         self.extra_genomes_count = kwargs.get("extra_genomes", 0)
         self.architecture = p_architecture
+        self.networks = []
         for i in range(population):
             self.networks.append(Network(p_architecture, 
                 (-self.weight_scale, self.weight_scale), (-self.bias_scale, self.bias_scale)))

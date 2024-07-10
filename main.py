@@ -8,12 +8,15 @@ from common import *
 
 from math import exp, log, floor, pi
 
+OUTPUT_NOISE = True
+
+
 def rays_func(inp: np.ndarray) -> np.ndarray:
-    return inp*100
+    return 20/inp
 
 
 def inverse_rays_func(inp: np.ndarray) -> np.ndarray:
-    return inp/100
+    return 20/inp
 
 
 def get_player_input() -> np.ndarray:
@@ -63,6 +66,8 @@ def update_state(state: np.ndarray, track: Track, pop: GANeuralNets,
         R[0,1] *= -1
         R[1,0] *= -1
 
+    #R = np.eye(2)
+
     rays = track.get_input(state, N_rays, R)
     tangents_global = track.get_path_dir(state)
     tangents = np.zeros(tangents_global.shape)
@@ -87,7 +92,9 @@ def update_state(state: np.ndarray, track: Track, pop: GANeuralNets,
     acc = (acc.T * (np.tanh(acc_norm) / acc_norm).T).T * 10
 
     # Output corruption
-    acc += np.random.normal(0, 10, acc.shape)
+    if OUTPUT_NOISE:
+        acc += np.random.normal(0, 10, acc.shape)
+
     # Multiply by the transpose
     acc_global = np.zeros(acc.shape)
     acc_global[:,0] = R[0,0] * acc[:,0] + R[1,0] * acc[:,1]
@@ -98,20 +105,10 @@ def update_state(state: np.ndarray, track: Track, pop: GANeuralNets,
 
 
 def training_loop_step(track: Track, pop: GANeuralNets, timesteps: int, 
-                       reward_bias: float, critic: Network, gen_distribution: np.ndarray,
-                        N_rays: int=8) -> tuple[np.ndarray, np.ndarray]:
+                       reward_bias: float, gen_distribution: np.ndarray,
+                       N_rays: int=8) -> tuple[np.ndarray, np.ndarray]:
     population = pop.population_count
-    #print("#", end="", flush=True)
-
-    cumulative_lifetime = np.zeros(population)
     reach = np.zeros(population)
-
-    J_prev = np.zeros(population)
-    gamma = 0.9
-
-    cum_critic_error = 0
-    critic_evals = 0
-
     crash_distribution = np.zeros(len(track.segments))
 
     state, spawns = gen_state(track, pop, gen_distribution)
@@ -127,26 +124,6 @@ def training_loop_step(track: Track, pop: GANeuralNets, timesteps: int,
         state[alive], inp, outp, = update_state(state[alive], track, pop, dt, N_rays)
         rays = inverse_rays_func(inp[:,:N_rays])
         
-        # Reintroduce critic
-        #for i in range(len(inp)):
-        #    reward = state[alive][i,4] - spawns[alive][i]
-        #    outp_critic, grad_critic = critic.get_gradients(np.concatenate((inp[i], outp[i])))
-        #    J = outp_critic[0,0]
-        #    e_c = np.array([[gamma**dt * J + reward - J_prev[alive][i]]])
-        #    E_c = .5 * (e_c.T@e_c)**2
-        #    cum_critic_error += E_c
-        #    critic_evals += 1
-        #
-        #    # update critic weights
-        #    critic_weight_delta = (grad_critic.T @ e_c).flatten() * -0.01
-        #    #critic_weight_delta = -np.linalg.solve(
-        #    #    grad_critic.T@grad_critic - 0.1 * np.eye(grad_critic.shape[1]), 
-        #    #    grad_critic.T@e_c
-        #    #).flatten()
-        #    critic.update_weights(critic_weight_delta)
-        #
-        #    J_prev[alive][i] = J
-    
         new_alive = np.logical_and(
             np.min(rays, axis=1) > 1,
             np.all(np.isfinite(state[alive]), axis=1)
@@ -166,7 +143,6 @@ def training_loop_step(track: Track, pop: GANeuralNets, timesteps: int,
     fitness = lifetime * (1 - reward_bias) + reach * reward_bias * 100
     fitness[alive] *= 2  # Great bonus to guys who survive to the end
     #fitness = state[:,4]
-    #print(cum_critic_error / critic_evals)
     return fitness, crash_distribution
 
 
@@ -185,8 +161,6 @@ def visualize(track: Track, pop: GANeuralNets, N_rays: int=8):
     gen_distribution = np.ones(len(track.segments))
 
     state, spawns = gen_state(track, pop, gen_distribution)
-
-    fitness = np.ones(pop.population_count) * 100
 
     alive = state[:,0] == state[:,0]
 
@@ -225,20 +199,44 @@ def visualize(track: Track, pop: GANeuralNets, N_rays: int=8):
     rl.close_window()
 
 
+def get_manual_net(id: str) -> np.ndarray:
+    ''' Meant for simplest linear net + PD, 6 rays'''
+    if id == 'track+avoidance':
+        return np.array([
+            -1,  -.5,    0,    0,    0,  -.5,  5,  0,  0,
+             0,-.867,-.867,    0, .867, .867,  0,  5,  0,
+             1,   -1,    1,   -1
+        ])
+    elif id == 'track':
+        return np.array([
+            0, 0, 0, 0, 0, 0, 5, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 5, 0,
+            1,-1, 1,-1
+        ])
+    elif id == 'stabilize':
+        return np.array([
+            0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0,
+            1,-1, 1,-1
+        ])
+    return np.zeros(22)
+
+
 def main():
     import matplotlib.pyplot as plt
 
     N_rays = 6
+    pop_size = 200
 
-    pop = GANeuralNets(200, [
+    pop = GANeuralNets(pop_size, [
         Layer.linear(N_rays+2),
         #Layer.tanh(10),
         Layer.linear(2),
     ],  weight_scale=1, bias_scale=0, extra_genomes=4)
-    track = Track("editing/track2.txt")
+    track = Track("editing/track1.txt")
 
     pop.elitism = True
-    pop.survivor_count = 50
+    pop.survivor_count = 20
     pop.mutation_rate = 0.2
     pop.mutation_stdev = 0.01
     #pop.mutation_rate = 0.001
@@ -246,47 +244,33 @@ def main():
 
     #pop.load("saved_networks/pop100_network_direct.dat")
     #pop.load("saved_networks/direct_from_scratch.dat")
-
-    generations = 1
+    #pop.load("saved_networks/8-10-2-lifetime.dat")
+    pop.genepool = np.repeat(get_manual_net('track+avoidance')[np.newaxis,:], pop_size, axis=0)
+    pop.update_networks()
+    
+    generations = 20
 
     learning = np.zeros(generations)
-
-    critic = Network([
-        Layer.linear(N_rays+4),
-        Layer.tanh(10),
-        Layer.tanh(1),
-    ])
-
     distribution = np.ones(len(track.segments))
     for generation in range(generations):
-        fitness, distribution = training_loop_step(track, pop, 300, 0, critic, distribution, N_rays)
+        fitness, distribution = training_loop_step(track, pop, 30, 1, distribution, N_rays)
         distribution += np.ones(len(track.segments)) * 100 / len(track.segments)
         pop.genetic_selection(fitness)
         learning[generation] = np.mean(fitness)
         #pop.mutation_stdev *= 0.99
-        print(f"{generation:3}  {max(fitness):>6.2f}  {np.mean(fitness):>6.2f}")
+        print(f"{generation:3}  {np.max(fitness):>6.2f}  {np.mean(fitness):>6.2f}")
     pop.save("saved_networks/last.dat")
-    pop.save("saved_networks/direct_from_scratch.dat")
+    #pop.save("saved_networks/direct_from_scratch.dat")
     if generations > 0:
         plt.plot(learning)
         plt.show()
     pop2 = pop.elite_sample(20)
-    visualize(track, pop2, N_rays)
+    visualize(track, pop, N_rays)
     #pop.save("saved_networks/speed_deep_pd.dat")
-    #training_loop(track1, pop, 10, 10000, 0, N_rays)
-    #training_loop(pop, 10, 10000, 0.5, N_rays)
-    #training_loop(pop, 6, 50, N_rays)
     best_candidate = pop.get_best_network()
     print(best_candidate.get_weight_matrix(0))
     print(pop.best_gene[-pop.extra_genomes_count:])
-    #print(best_candidate.get_weight_matrix(1))
-    #visualize(track1, pop, N_rays)
 
-    #pop = GANeuralNets(10, [
-    #    Layer.linear(N_rays+2),
-    #    Layer.linear(2),
-    #], scale=0.1)
-    #visualize(pop, N_rays)
 
 
 if __name__ == "__main__":
