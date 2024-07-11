@@ -3,46 +3,113 @@ from typing import Callable
 
 import numpy as np
 
+class Network:
+    weights: np.ndarray
+
+    def update_weights(self, delta: np.ndarray) -> None:
+        raise NotImplementedError("Not available in base class")
+    
+    def eval(self, input: np.ndarray) -> np.ndarray:
+        raise NotImplementedError("Not available in base class")
+        
+    def get_gradients(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError("Not available in base class")
+
+class RBFNN(Network):
+    def __init__(self, p_inpsize: int, p_size: int, p_outsize: int,
+                 w_clamp: tuple[float, float]=(-1,1), b_clamp: tuple[float, float]=(-1,1)):
+        self.inpsize = p_inpsize
+        self.size = p_size
+        self.outsize = p_outsize
+        self.w_min, self.w_max = w_clamp
+        self.b_min, self.b_max = b_clamp
+        self.centers = np.zeros((self.size, self.inpsize))
+        self.stdevs = np.ones((self.size, self.inpsize))
+        self.weights = np.random.uniform(self.w_min, self.w_max, (self.size + 1) * self.outsize)
+
+    def set_rbfs(self, p_centers: np.ndarray, p_stddevs: np.ndarray|None=None) -> None:
+        if p_stddevs is None:
+            self.inv_stdevs = np.ones((self.size, self.inpsize))
+        else:
+            self.inv_stdevs = 1 / p_stddevs
+        self.centers = p_centers
+        
+    def update_weights(self, delta: np.ndarray) -> None:
+        self.weights += delta
+        matrix = self.weights.reshape(self.outsize, -1)
+        matrix[:, -1] = np.maximum(np.minimum(matrix[:, -1], self.b_max), self.b_min)
+        matrix[:,:-1] = np.maximum(np.minimum(matrix[:,:-1], self.w_max), self.w_min)
+        self.weights = matrix.flatten()
+
+    def eval(self, input: np.ndarray) -> np.ndarray:
+        rbf_x = self.inv_stdevs * (self.centers - input[np.newaxis,:])
+        rbf_out = np.exp(-np.sum(rbf_x*rbf_x, axis=1))
+        out = self.weights.reshape(self.outsize, -1) @ np.append(rbf_out, 1)
+        return out[:,np.newaxis]
+    
+    def get_gradients(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        rbf_x = self.stdevs * (self.centers - input[np.newaxis,:])
+        rbf_out = np.exp(-np.sum(rbf_x*rbf_x, axis=1))
+        output = self.weights.reshape(self.outsize, -1) @ np.append(rbf_out, 1)
+        
+        # Gradient w.r.t layers
+        dy_dout = np.eye(self.outsize)
+        dy_dhidden = dy_dout @ self.weights.reshape(self.outsize, -1)[:,:-1]
+            
+        # Gradient w.r.t weights
+        dy_dw = np.zeros((self.outsize, len(self.weights)))
+        for j in range(self.outsize):
+            previous_layer = np.append(rbf_out[:,np.newaxis], 1)[:,np.newaxis]
+            dy_dw[j] = (previous_layer @ dy_dout[j:j+1]).T.flatten()
+        
+        return output[:,np.newaxis], dy_dw
+
 class Layer:
     def __init__(self, p_size: int, p_fwd: Callable[[np.ndarray], np.ndarray], 
-                 p_back: Callable[[np.ndarray], np.ndarray]):
+                 p_back: Callable[[np.ndarray, np.ndarray], np.ndarray]):
         self.size = p_size
         self.fwd = p_fwd
         self.back = p_back  # Derivative gets calculated off of f(x)
         
     @classmethod
+    def gaussian(cls, size: int) -> Layer:
+        return cls(size, 
+                   lambda x: np.exp(-x*x), 
+                   lambda x, f: -2*x*f)
+
+    @classmethod
     def linear(cls, size: int) -> Layer:
         return cls(size, 
                    lambda x: x, 
-                   lambda f: np.ones(f.shape))
+                   lambda x, f: np.ones(f.shape))
 
     @classmethod
     def relu(cls, size: int) -> Layer:
         return cls(size, 
                    lambda x: np.maximum(x, 0), 
                    # cast boolean to array as step-function
-                   lambda f: np.asarray(np.single(f > 0)))
+                   lambda x, f: np.asarray(np.single(f > 0)))
     
     @classmethod
     def clamped(cls, size: int) -> Layer:
         return cls(size, 
                    lambda x: np.minimum(np.maximum(x, -1), 1), 
                    # cast boolean to array as step-function
-                   lambda f: np.asarray(np.single(np.abs(f) < 1)))
+                   lambda x, f: np.asarray(np.single(np.abs(f) < 1)))
     
     @classmethod
     def sigmoid(cls, size: int) -> Layer:
         return cls(size, 
                    lambda x: 1 / (1 + np.exp(-x)), 
-                   lambda f: f * (1 - f))
+                   lambda x, f: f * (1 - f))
     
     @classmethod
     def tanh(cls, size: int) -> Layer:
         return cls(size, 
                    lambda x: np.tanh(x), 
-                   lambda f: 1-f*f)
+                   lambda x, f: 1-f*f)
 
-class Network:
+class FFNN(Network):
     def __init__(self, p_architecture: list[Layer], 
                  w_clamp: tuple[float, float]=(-1,1), b_clamp: tuple[float, float]=(-1,1)):
         self.w_min, self.w_max = w_clamp
@@ -107,18 +174,19 @@ class Network:
         N_layers = len(self.architecture)
 
         layers = [np.zeros(0)]*N_layers
+        layers_lin = [np.zeros(0)]*N_layers
         layers[0] = np.append(mat_input, [[1]], axis=0)
         for i in range(N_layers-1):
-            out_linear = self.get_weight_matrix(i) @ layers[i]
-            layers[i+1] = np.append(self.architecture[i+1].fwd(out_linear), [[1]], axis=0)
+            layers_lin[i+1] = self.get_weight_matrix(i) @ layers[i]
+            layers[i+1] = np.append(self.architecture[i+1].fwd(layers_lin[i+1]), [[1]], axis=0)
             
         output = layers[-1][:-1]
 
         # Gradient w.r.t layers
         dy_dv = [np.zeros(0)]*N_layers
-        dy_dv[-1] = np.diag(self.architecture[-1].back(output).flatten())
+        dy_dv[-1] = np.diag(self.architecture[-1].back(layers_lin[-1], output).flatten())
         for i in range(N_layers-2, -1, -1):
-            activation_derivative = self.architecture[i].back(layers[i][:-1]).T
+            activation_derivative = self.architecture[i].back(layers_lin[i], layers[i][:-1]).T
             dy_dv[i] = (dy_dv[i+1] @ self.get_weight_matrix(i))[:,:-1] * activation_derivative
             
         # Gradient w.r.t weights
@@ -133,8 +201,10 @@ class Network:
 
 
 def check_gradients(nn: Network, show:bool=False) -> bool:
-
-    input_dim = nn.architecture[0].size
+    if isinstance(nn, FFNN):
+        input_dim = nn.architecture[0].size
+    elif isinstance(nn, RBFNN):
+        input_dim = nn.inpsize
     inp = np.random.uniform(-7, 7, (input_dim,))
     output, J = nn.get_gradients(inp)
     EPSILON = 1e-2
@@ -174,7 +244,7 @@ def sin_test(nn: Network) -> None:
         cum_delta_weights = np.zeros(len(nn.weights))
         for index in range(epoch_size):
             #inp = np.random.uniform(-7, 7, 1)
-            inp = learning_xx[index]
+            #inp = learning_xx[index]
             inp = np.random.uniform(-7, 7, (1,))
             expected = np.sin(inp)
             output, J = nn.get_gradients(inp)
@@ -230,14 +300,20 @@ def sin_test(nn: Network) -> None:
     #    E = .5 * (e.T@e)[0,0]
     #    print(E)
 
+
 if __name__ == "__main__":
-    nn = Network([
+    nn = FFNN([
         Layer.linear(1),
-        Layer.tanh(10),
+        Layer.gaussian(10),
         Layer.linear(1)
     ], (-1, 1), (-7, 7))
 
-    check_gradients(nn)
-    sin_test(nn)
+    #check_gradients(nn)
+    #sin_test(nn)
 
-        
+    N_rbf = 15
+    rbfnn = RBFNN(1, N_rbf, 1, (-1, 1), (0, 0))
+    rbfnn.set_rbfs(np.linspace(-7, 7, N_rbf)[:,np.newaxis], np.ones(N_rbf) * 3)
+    
+    check_gradients(rbfnn)
+    sin_test(rbfnn)

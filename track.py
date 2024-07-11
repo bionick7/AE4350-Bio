@@ -191,9 +191,9 @@ class TrackSegmentLine(TrackSegment):
     
     def get_track_coordinates(self, pt: np.ndarray) -> np.ndarray:
         along = (pt - self.start).dot(self._normalized_dir)
-        closest = self.start + self._normalized_dir * along
-        across = np.linalg.norm(pt - closest)
-        return np.array([along, across])
+        closest = self.start + self._normalized_dir * along[:,np.newaxis]
+        across = np.linalg.norm(pt - closest, axis=1)
+        return np.concatenate([along, across]).reshape(2, -1).T
     
     def get_tangent_at(self, pts: np.ndarray) -> np.ndarray:
         res = pts*0
@@ -221,17 +221,17 @@ class TrackSegmentArc(TrackSegment):
     
     def get_track_coordinates(self, pt: np.ndarray) -> np.ndarray:
         rel_pt = pt - self._center
-        angle = np.arctan2(rel_pt[1], rel_pt[0])
+        angle = np.arctan2(rel_pt[:,1], rel_pt[:,0])
         #angle = min(max(angle, 0), self._a2 - self._a1)
         t_ang = (angle - self._a1) % (2*np.pi)
         # Half the outside range is negative
-        if t_ang > (self._a2 - self._a1) / 2 + np.pi:
-            t_ang -= np.pi*2
+        t_ang[t_ang > (self._a2 - self._a1) / 2 + np.pi] -= np.pi*2
         along = t_ang * self._radius
-        closest = self._center + np.array([np.cos(angle), np.sin(angle)]) * self._radius
-        across = np.linalg.norm(pt - closest)
+        cos_sin = np.concatenate((np.cos(angle), np.sin(angle))).reshape(2, -1).T
+        closest = self._center + cos_sin * self._radius
+        across = np.linalg.norm(pt - closest, axis=1)
         
-        return np.array([along, across])
+        return np.concatenate((along, across)).reshape(2, -1).T
     
     def get_tangent_at(self, pts: np.ndarray) -> np.ndarray:
         rel_pts = pts - self._center
@@ -333,7 +333,7 @@ class Track:
                 states[state_index,2:4] = normal * 0.1
                 
             # Update track distance
-            along_track, across_track = self.segments[segment_index].get_track_coordinates(states[state_index,:2])
+            along_track, across_track = self.segments[segment_index].get_track_coordinates(states[np.newaxis, state_index,:2])[0]
             states[state_index,4] = lap_index * len(self.segments) + segment_index +\
                                     along_track / self.segments[segment_index].length
 
@@ -370,6 +370,14 @@ class Track:
         res = np.zeros((len(state), 2))
         for i in range(len(self.segments)):
             res[segment_indices==i] = self.segments[i].get_tangent_at(state[segment_indices==i,:2])
+        return res
+
+
+    def get_track_coordinates(self, state: np.ndarray) -> np.ndarray:
+        segment_indices = (np.floor(state[:,4] % len(self.segments))).astype(np.int32)
+        res = np.zeros((len(state), 2))
+        for i in range(len(self.segments)):
+            res[segment_indices==i] = self.segments[i].get_track_coordinates(state[segment_indices==i,:2])
         return res
 
     def show(self, state: np.ndarray, c=HIGHLIGHT):
