@@ -112,7 +112,7 @@ def critic_training(critic: Network, inp: np.ndarray, outp: np.ndarray,
                     r: float, J_prev: float, training: dict) -> tuple[float, float]:
 
     critic_inp = np.concatenate((inp, outp))
-    critic_outp, dwdy = critic.get_gradients(critic_inp)
+    critic_outp, dwdy = critic.get_weight_gradient(critic_inp)
     J: float = critic_outp.flatten()[0]
     e: float = J_prev - (training['gamma'] * J + r)
 

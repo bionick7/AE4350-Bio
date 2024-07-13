@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from networks import Network, Layer
+from networks import FFNN, Layer
 
 from random import randint, random
 import numpy as np
@@ -80,7 +80,7 @@ class GANeuralNets(GAPopulation):
         self.architecture = p_architecture
         self.networks = []
         for i in range(population):
-            self.networks.append(Network(p_architecture, 
+            self.networks.append(FFNN(p_architecture, 
                 (-self.weight_scale, self.weight_scale), (-self.bias_scale, self.bias_scale)))
         
         super().__init__(population, len(self.networks[0].weights) + self.extra_genomes_count, **kwargs)
@@ -103,8 +103,8 @@ class GANeuralNets(GAPopulation):
                 input_index += 1
         return outputs
     
-    def get_best_network(self) -> Network:
-        res = Network(self.architecture, (-self.weight_scale, self.weight_scale), (-self.weight_scale, self.weight_scale))
+    def get_best_network(self) -> FFNN:
+        res = FFNN(self.architecture, (-self.weight_scale, self.weight_scale), (-self.weight_scale, self.weight_scale))
         res.weights = self.best_gene * self.weight_scale
         return res
     

@@ -1,19 +1,58 @@
 from __future__ import annotations
 from typing import Callable
+from math import prod
 
 import numpy as np
 
 class Network:
     weights: np.ndarray
 
+    def get_layer_size(self, layer) -> int:
+        raise NotImplementedError("Not available in base class")
+
     def update_weights(self, delta: np.ndarray) -> None:
         raise NotImplementedError("Not available in base class")
-    
+
     def eval(self, input: np.ndarray) -> np.ndarray:
         raise NotImplementedError("Not available in base class")
         
-    def get_gradients(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def get_weight_gradient(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         raise NotImplementedError("Not available in base class")
+    
+    def get_io_gradient(self, input: np.ndarray) -> np.ndarray:
+        raise NotImplementedError("Not available in base class")
+
+    def load_from(self, filepath: str):
+        self.weights = np.loadtxt(filepath)
+    
+    def save_to(self, filepath: str):
+        np.savetxt(filepath, self.weights)
+
+    def learn_gd(self, beta: float, input: np.ndarray|float, expected_output: np.ndarray|float
+                 ) -> tuple[np.ndarray, float]:
+        if isinstance(input, float):
+            input = np.array([input])
+        if isinstance(expected_output, float):
+            expected_output = np.array([expected_output])
+        outp, grad = self.get_weight_gradient(input)
+        e = outp - expected_output
+        weight_delta = (grad.T @ e).flatten() * -beta
+        self.update_weights(weight_delta)
+
+        return outp, 0.5 * (e.T@e).flatten()[0]
+    
+    def learn_ml(self, mu: float, input: np.ndarray|float, expected_output: np.ndarray|float
+                 ) -> tuple[np.ndarray, float]:
+        if isinstance(input, float):
+            input = np.array([input])
+        if isinstance(expected_output, float):
+            expected_output = np.array([expected_output])
+        outp, grad = self.get_weight_gradient(input)
+        e = outp - expected_output
+        weight_delta = -np.linalg.solve(grad.T@grad - mu * np.eye(grad.shape[1]), grad.T@e).flatten()
+        self.update_weights(weight_delta)
+
+        return outp, 0.5 * (e.T@e).flatten()[0]
 
 class RBFNN(Network):
     def __init__(self, p_inpsize: int, p_size: int, p_outsize: int,
@@ -24,14 +63,17 @@ class RBFNN(Network):
         self.w_min, self.w_max = w_clamp
         self.b_min, self.b_max = b_clamp
         self.centers = np.zeros((self.size, self.inpsize))
-        self.stdevs = np.ones((self.size, self.inpsize))
+        self.inv_stdevs = np.ones((self.size, self.inpsize))
         self.weights = np.random.uniform(self.w_min, self.w_max, (self.size + 1) * self.outsize)
 
+    def get_layer_size(self, layer) -> int:
+        return (self.inpsize, self.size, self.outsize)[layer]
+    
     def set_rbfs(self, p_centers: np.ndarray, p_stddevs: np.ndarray|None=None) -> None:
         if p_stddevs is None:
             self.inv_stdevs = np.ones((self.size, self.inpsize))
         else:
-            self.inv_stdevs = 1 / p_stddevs
+            self.inv_stdevs = 1/p_stddevs.reshape(self.size, self.inpsize)
         self.centers = p_centers
         
     def update_weights(self, delta: np.ndarray) -> None:
@@ -42,19 +84,18 @@ class RBFNN(Network):
         self.weights = matrix.flatten()
 
     def eval(self, input: np.ndarray) -> np.ndarray:
-        rbf_x = self.inv_stdevs * (self.centers - input[np.newaxis,:])
-        rbf_out = np.exp(-np.sum(rbf_x*rbf_x, axis=1))
+        dist = input[np.newaxis,:] - self.centers
+        rbf_out = np.exp(-np.sum(np.square(dist*self.inv_stdevs), axis=1))
         out = self.weights.reshape(self.outsize, -1) @ np.append(rbf_out, 1)
         return out[:,np.newaxis]
     
-    def get_gradients(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        rbf_x = self.stdevs * (self.centers - input[np.newaxis,:])
-        rbf_out = np.exp(-np.sum(rbf_x*rbf_x, axis=1))
+    def get_weight_gradient(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        dist = input[np.newaxis,:] - self.centers
+        rbf_out = np.exp(-np.sum(np.square(dist*self.inv_stdevs), axis=1))
         output = self.weights.reshape(self.outsize, -1) @ np.append(rbf_out, 1)
         
         # Gradient w.r.t layers
         dy_dout = np.eye(self.outsize)
-        dy_dhidden = dy_dout @ self.weights.reshape(self.outsize, -1)[:,:-1]
             
         # Gradient w.r.t weights
         dy_dw = np.zeros((self.outsize, len(self.weights)))
@@ -63,6 +104,31 @@ class RBFNN(Network):
             dy_dw[j] = (previous_layer @ dy_dout[j:j+1]).T.flatten()
         
         return output[:,np.newaxis], dy_dw
+
+    def get_io_gradient(self, input: np.ndarray) -> np.ndarray:
+        dist = input[np.newaxis,:] - self.centers
+        rbf_out = np.exp(-np.sum(np.square(dist*self.inv_stdevs), axis=1))
+        
+        # Gradients
+        dy_dv = self.weights.reshape(self.outsize, -1)[:,:-1]
+        dv_din = -2 * dist * self.inv_stdevs*self.inv_stdevs * rbf_out[:,np.newaxis]
+        return dy_dv @ dv_din
+
+    @classmethod
+    def grid_spaced(cls, output_size: int, *spacings: np.ndarray,
+                    w_clamp: tuple[float, float]=(-1,1), b_clamp: tuple[float, float]=(-1,1)) -> RBFNN:
+        ''' Assumes equal spacing '''
+        input_size = len(spacings)
+        rbf_size = prod([len(spacing) for spacing in spacings])
+        res = RBFNN(input_size, rbf_size, output_size, w_clamp, b_clamp)
+        rbf_coords = np.meshgrid(*spacings)
+        centers = np.vstack([x.flatten() for x in rbf_coords]).T
+        stdevs = np.zeros(input_size)
+        for i, spacing in enumerate(spacings):
+            stdevs[i] = (np.max(spacing) - np.min(spacing)) / len(spacing)
+        res.set_rbfs(centers, np.ones(centers.shape) * stdevs*1.5)
+        return res
+
 
 class Layer:
     def __init__(self, p_size: int, p_fwd: Callable[[np.ndarray], np.ndarray], 
@@ -133,6 +199,9 @@ class FFNN(Network):
         self.weights = np.zeros(total_weights)
         self._initialize()
 
+    def get_layer_size(self, layer) -> int:
+        return self.architecture[layer].size
+    
     def _initialize(self) -> None:
         for i in range(len(self.architecture)-1):
             offs = self.offsets[i]
@@ -169,7 +238,7 @@ class FFNN(Network):
 
         return prev_layer[:-1]
 
-    def get_gradients(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def get_weight_gradient(self, input: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         mat_input = input.reshape(-1, 1)
         N_layers = len(self.architecture)
 
@@ -199,14 +268,33 @@ class FFNN(Network):
         
         return output, dy_dw
 
+    def get_io_gradient(self, input: np.ndarray) -> np.ndarray:
+        mat_input = input.reshape(-1, 1)
+        N_layers = len(self.architecture)
 
-def check_gradients(nn: Network, show:bool=False) -> bool:
-    if isinstance(nn, FFNN):
-        input_dim = nn.architecture[0].size
-    elif isinstance(nn, RBFNN):
-        input_dim = nn.inpsize
-    inp = np.random.uniform(-7, 7, (input_dim,))
-    output, J = nn.get_gradients(inp)
+        layers = [np.zeros(0)]*N_layers
+        layers_lin = [np.zeros(0)]*N_layers
+        layers[0] = np.append(mat_input, [[1]], axis=0)
+        for i in range(N_layers-1):
+            layers_lin[i+1] = self.get_weight_matrix(i) @ layers[i]
+            layers[i+1] = np.append(self.architecture[i+1].fwd(layers_lin[i+1]), [[1]], axis=0)
+            
+        output = layers[-1][:-1]
+
+        # Gradient w.r.t layers
+        dy_dv = [np.zeros(0)]*N_layers
+        dy_dv[-1] = np.diag(self.architecture[-1].back(layers_lin[-1], output).flatten())
+        for i in range(N_layers-2, -1, -1):
+            activation_derivative = self.architecture[i].back(layers_lin[i], layers[i][:-1]).T
+            dy_dv[i] = (dy_dv[i+1] @ self.get_weight_matrix(i))[:,:-1] * activation_derivative
+
+        return dy_dv[0]
+    
+
+def check_weight_gradients(nn: Network, show:bool=False) -> bool:
+    input_dim = nn.get_layer_size(0)
+    inp = np.random.uniform(-1, 1, (input_dim,))
+    output, J = nn.get_weight_gradient(inp)
     EPSILON = 1e-2
     for output_index in range(len(J)):
         for weight_index in range(len(J[output_index])):
@@ -221,7 +309,31 @@ def check_gradients(nn: Network, show:bool=False) -> bool:
                 print(finite_diff, J[output_index,weight_index])
             discrepency = abs(finite_diff - J[output_index,weight_index])
             if discrepency > 1e-3:
-                print(f"Discrepency ({discrepency}) to finite differencees found:")
+                print(f"Discrepency ({discrepency}) to finite differencees (weights) found:")
+                return False
+
+    return True
+
+
+def check_io_gradients(nn: Network, show:bool=False) -> bool:
+    input_dim = nn.get_layer_size(0)
+    inp = np.random.uniform(-1, 1, input_dim)
+    output = nn.eval(inp)
+    grad = nn.get_io_gradient(inp)
+    EPSILON = 1e-2
+    for output_index in range(len(output)):
+        for input_index in range(input_dim):
+            new_inp = inp.copy()
+            new_inp[input_index] += EPSILON
+            y_plus = nn.eval(new_inp)
+            new_inp[input_index] -= EPSILON*2
+            y_minus = nn.eval(new_inp)
+            finite_diff = (y_plus - y_minus) / (2*EPSILON)
+            if show:
+                print(finite_diff, grad[output_index, input_index])
+            discrepency = abs(finite_diff - grad[output_index, input_index])
+            if discrepency > 3e-3:
+                print(f"Discrepency ({discrepency}) to finite differencees (IO) found:")
                 return False
 
     return True
@@ -230,7 +342,7 @@ def check_gradients(nn: Network, show:bool=False) -> bool:
 def sin_test(nn: Network) -> None:
     import matplotlib.pyplot as plt
 
-    epochs = 100
+    epochs = 20
     epoch_size = 20
 
     learning_xx = np.linspace(-7, 7, epoch_size)
@@ -247,7 +359,7 @@ def sin_test(nn: Network) -> None:
             #inp = learning_xx[index]
             inp = np.random.uniform(-7, 7, (1,))
             expected = np.sin(inp)
-            output, J = nn.get_gradients(inp)
+            output, J = nn.get_weight_gradient(inp)
             e = output - expected.reshape(-1, 1)
             mu = min(0.99, max(0.01, 1 - epoch / 20))
             delta_weights = -np.linalg.solve(J.T@J - mu * np.eye(J.shape[1]), J.T@e).flatten()
@@ -261,7 +373,7 @@ def sin_test(nn: Network) -> None:
         avg_error_2 = 0
         for index in range(epoch_size):
             #inp = np.random.uniform(-7, 7, 1)
-            inp = learning_xx[index]
+            inp = learning_xx[index,np.newaxis]
             expected = np.sin(inp)
             e = nn.eval(inp) - expected.reshape(-1, 1)
             E = .5 * (e.T@e)[0,0]
@@ -278,10 +390,10 @@ def sin_test(nn: Network) -> None:
     
     fig1 = plt.figure()
     ax1 = fig1.add_subplot(211)
-    sample_xx = np.linspace(-7, 7, 100)
-    sample_yy = np.zeros(100)
-    for i in range(100):
-        sample_yy[i] = nn.eval(sample_xx[i])[0,0]
+    sample_xx = np.linspace(-7, 7, 1000)
+    sample_yy = np.zeros(1000)
+    for i in range(1000):
+        sample_yy[i] = nn.eval(sample_xx[i,np.newaxis])[0,0]
     ax1.plot(sample_xx, sample_yy)
     ax1.plot(sample_xx, np.sin(sample_xx))
     ax1.scatter(learning_xx, np.sin(learning_xx))
@@ -302,18 +414,20 @@ def sin_test(nn: Network) -> None:
 
 
 if __name__ == "__main__":
-    nn = FFNN([
+    ffnn = FFNN([
         Layer.linear(1),
-        Layer.gaussian(10),
+        Layer.tanh(20),
         Layer.linear(1)
     ], (-1, 1), (-7, 7))
 
-    #check_gradients(nn)
-    #sin_test(nn)
+    check_weight_gradients(ffnn)
+    check_io_gradients(ffnn)
+    sin_test(ffnn)
 
     N_rbf = 15
     rbfnn = RBFNN(1, N_rbf, 1, (-1, 1), (0, 0))
-    rbfnn.set_rbfs(np.linspace(-7, 7, N_rbf)[:,np.newaxis], np.ones(N_rbf) * 3)
+    rbfnn.set_rbfs(np.linspace(-7, 7, N_rbf)[:,np.newaxis], np.ones(N_rbf) * 1)
     
-    check_gradients(rbfnn)
-    sin_test(rbfnn)
+    #sin_test(rbfnn)
+    #check_weight_gradients(rbfnn)
+    #check_io_gradients(rbfnn)
