@@ -4,7 +4,7 @@ from math import prod
 
 import numpy as np
 
-def levenberg_marquard(grad: np.ndarray, e: np.ndarray, mu: float):
+def levenberg_marquardt(grad: np.ndarray, e: np.ndarray, mu: float):
     return -np.linalg.solve(grad.T@grad - mu * np.eye(grad.shape[1]), grad.T@e).flatten()
 
 class Network:
@@ -52,7 +52,7 @@ class Network:
             expected_output = np.array([expected_output])
         outp, grad = self.get_weight_gradient(input)
         e = outp - expected_output
-        weight_delta = levenberg_marquard(grad, e, mu)
+        weight_delta = levenberg_marquardt(grad, e, mu)
         self.update_weights(weight_delta)
 
         return outp, 0.5 * (e.T@e).flatten()[0]
