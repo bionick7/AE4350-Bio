@@ -2,7 +2,8 @@ import numpy as np
 import pyray as rl
 
 from networks import Network, FFNN, RBFNN, Layer
-from population import GANeuralNets
+from rl_test import acceleration_dynamics_2d, rk4
+from adhdp import ADHDP
 from track import Track
 from common import *
 
@@ -62,8 +63,7 @@ def classical_control(inp: np.ndarray, N_rays: int) -> np.ndarray:
 
 
 def update_state(state: np.ndarray, track: Track,
-                 dt: float, N_rays: int, player_input: np.ndarray=np.zeros(2)
-                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                 dt: float, N_rays: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     
     rotation_angle = np.random.uniform(0, 2*pi)
     R = np.array([
@@ -75,8 +75,8 @@ def update_state(state: np.ndarray, track: Track,
         R[0,1] *= -1
 
     #R = np.eye(2)
-
     rays = track.get_input(state, N_rays, R)
+
     tangents_global = track.get_path_dir(state)
     tangents = np.zeros(tangents_global.shape)
     tangents[:,0] = R[0,0] * tangents_global[:,0] + R[0,1] * tangents_global[:,1]
@@ -108,27 +108,6 @@ def update_state(state: np.ndarray, track: Track,
     return state, acc, inp
 
 
-def critic_training(critic: Network, inp: np.ndarray, outp: np.ndarray, 
-                    r: float, J_prev: float, training: dict) -> tuple[float, float]:
-
-    critic_inp = np.concatenate((inp, outp))
-    critic_outp, dwdy = critic.get_weight_gradient(critic_inp)
-    J: float = critic_outp.flatten()[0]
-    e: float = J_prev - (training['gamma'] * J + r)
-
-    mu = 0.2
-    #delta_weights = -np.linalg.solve(dwdy.T@dwdy - mu * np.eye(dwdy.shape[1]), dwdy.T*e).flatten()
-    delta_weights = -dwdy.flatten()*e * training['alpha']
-    critic.update_weights(delta_weights)
-    return J, .5*e**2
-
-def init_training_details(state: np.ndarray) -> dict:
-    return {
-        'gamma': 0.5,
-        'alpha': 1e-4,
-        'J': np.zeros(len(state))
-    }
-
 def update_state_and_train(track: Track, state: np.ndarray, spawns: np.ndarray, critic: Network, training_data: dict,
                            dt: float, N_rays: int=8) -> np.ndarray:
     ''' Relies on mutability of training_data '''
@@ -149,16 +128,34 @@ def update_state_and_train(track: Track, state: np.ndarray, spawns: np.ndarray, 
     return state
 
 
-def training_loop_step(track: Track, critic: Network, N_rays: int=8) -> None:
+def state_derivative(state: np.ndarray, u: np.ndarray, track: Track, dt: float) -> np.ndarray:
+    x = state[:4]
+    dxdu1 = state[5:9]
+    dxdu2 = state[10:]
+    res = x.copy()
+    res[:4] = rk4(acceleration_dynamics_2d, x[:4], u, dt)
+    segment_index = int(floor(state[4] % len(track.segments)))
+    along_track, across_track = track.segments[segment_index].get_track_coordinates(x[np.newaxis,:2])[0]
+    res[4] = along_track
+    return res
+
+
+def reward(x: np.ndarray, track: Track) -> float:
+    center_distance = 2*np.abs(track.get_track_coordinates(x[np.newaxis,:])[0,1])/track.track_width  # -1 ... 1
+    return center_distance*center_distance
+
+
+def training_loop(track: Track, adhdp: ADHDP, N_rays: int=8) -> None:
     population = 20
     state, spawns = gen_state(track, population)
-    training = init_training_details(state)
     for _ in range(300):
         dt = 0.1
-        state = update_state_and_train(track, state, spawns, critic, training, dt, N_rays)
+        state[:4] = adhdp.step_and_learn(state, lambda x: x[:4],
+                                        lambda x, u: state_derivative(x, u, track, dt), 
+                                        lambda x: reward(x, track))
 
 
-def visualize(track: Track, critic: Network, N_rays: int=8):
+def visualize(track: Track, adhdp: ADHDP, N_rays: int=8):
     #track = Track()
 
     rl.set_config_flags(0
@@ -166,12 +163,11 @@ def visualize(track: Track, critic: Network, N_rays: int=8):
         | rl.ConfigFlags.FLAG_VSYNC_HINT
     )
     rl.set_target_fps(60)
-    rl.init_window(1000, 600, "Genetic Algorythm Visualizer")
+    rl.init_window(1000, 600, "Genetic Algorithm Visualizer")
     camera = rl.Camera2D(rl.Vector2(500, 300), rl.Vector2(0, 0), 0, 1)
     paused = True
 
     state, spawns = gen_state(track, 20)
-    training = init_training_details(state)
 
     while not rl.window_should_close():
         #dt = rl.get_frame_time()
@@ -180,14 +176,10 @@ def visualize(track: Track, critic: Network, N_rays: int=8):
             paused = not paused
 
         if rl.is_key_pressed(rl.KeyboardKey.KEY_S):
-            np.savetxt("saved_networks/critic_weights.dat", critic.weights)
+            #np.savetxt("saved_networks/critic_weights.dat", critic.weights)
+            pass
             
-        if rl.is_key_pressed(rl.KeyboardKey.KEY_G):
-            training['gamma'] += 0.1
-
-        player_input = get_player_input()
-        if not paused:
-            state = update_state_and_train(track, state, spawns, critic, training, dt, N_rays)
+        training_loop(track, adhdp, N_rays)
 
         rl.begin_drawing()
         rl.clear_background(BG)
@@ -206,23 +198,27 @@ def visualize(track: Track, critic: Network, N_rays: int=8):
 def main():
     import matplotlib.pyplot as plt
 
-    N_rays = 6
-    weight_range = 5
-    critic = FFNN([
-        Layer.linear(12),
-        Layer.tanh(10),
-        #Layer.tanh(20),
-        Layer.linear(1)
-    ], w_clamp=(-weight_range,weight_range), b_clamp=(-weight_range,weight_range))
-    #critic.weights = np.loadtxt("saved_networks/critic_weights.dat")
-
+    population = 20
     track = Track("editing/track2.txt")
-    visualize(track, critic, N_rays)
-    print(critic.get_weight_matrix(0)[:,-1])
-    print(critic.get_weight_matrix(1)[:,-1])
-    print(critic.get_weight_matrix(2)[:,-1])
-    print(critic.get_weight_matrix(2))
-    #training_loop_step(track, critic, N_rays)
+
+    actor = FFNN([
+        Layer.linear(4),
+        Layer.tanh(4),
+        Layer.linear(2),
+    ], (-1, 1), (0, 0))
+    actor.load_weights_from("saved_networks/acc2d/actor_trained_p99.dat")
+    critic = FFNN([
+        Layer.linear(6),
+        Layer.tanh(10),
+        Layer.tanh(10),
+        Layer.linear(1),
+    ], (-1, 1), (-1, 1))
+    critic.load_weights_from("saved_networks/acc2d/critic_trained_p99.dat")
+
+    adhdp = ADHDP(actor, critic, population)
+
+    N_rays = 6
+    training_loop(track, adhdp, N_rays)
 
 
 if __name__ == "__main__":

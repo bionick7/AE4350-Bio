@@ -8,6 +8,7 @@ import numpy as np
 def levenberg_marquardt(grad: np.ndarray, e: np.ndarray, mu: float):
     return -np.linalg.solve(grad.T@grad - mu * np.eye(grad.shape[1]), grad.T@e).flatten()
 
+
 class Network:
     weights: np.ndarray
 
