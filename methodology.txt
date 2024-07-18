@@ -1,0 +1,9 @@
+== simple 1d acceleration
+- actor is PD: 0.1, 0.1
+- train critic on r (gamma = 0)
+- increase gamma until 0.99
+- train actor + critic
+
+TODO:
+
+== 

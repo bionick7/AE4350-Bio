@@ -2,8 +2,8 @@ import numpy as np
 import pyray as rl
 
 from common import *
-from collision_detection import get_bezier_coeffs, bezier_distance
 from math import fmod, floor
+
 
 class TrackWall:
     def __init__(self, **kwargs) -> None:
@@ -170,6 +170,7 @@ class TrackSegment:
 
     def evaluate_points(self, evals: np.ndarray) -> np.ndarray:
         raise NotImplementedError("Not implemented in base class")
+
 
 class TrackSegmentLine(TrackSegment):
     def __init__(self, p_start: np.ndarray, p_end: np.ndarray, track_width: float) -> None:

@@ -32,11 +32,12 @@ class ADHDP:
             u_raw, grad_actor = self.actor.get_weight_gradient(state)
             u_raw = u_raw.flatten()
 
-            u = u_raw + np.random.normal(0, 0.05)
+            #u = u_raw + np.random.normal(0, 0.01)
+            u = u_raw
 
             # Runge-Kutta
             x_size = self.actor.get_layer_size(0)
-            integration_state = np.concatenate((state, state*0))
+            integration_state = np.concatenate((state, state*0, state*0))
             k1 = f_dynamcis(integration_state, u)
             k2 = f_dynamcis(integration_state + k1*dt/2, u)
             k3 = f_dynamcis(integration_state + k2*dt/2, u)
@@ -53,26 +54,29 @@ class ADHDP:
             if self.train_critic:
                 #J, E_c = self.critic.learn_ml(0.01, critic_input, critic_expected)
                 J, E_c = self.critic.learn_gd(1e-3, critic_input, critic_expected)
+                J = J[0]
             else:
-                J = self.critic.eval(critic_input).flatten()[0]
+                J = self.critic.eval(critic_input)[0]
                 E_c = (J - critic_expected)**2 * .5
 
             J_tgt = 0
             e_a = np.array([[J - J_tgt]])
-            E_a: float = .5 * (e_a.T@e_a).flatten()[0]
+            E_a: float = .5 * np.dot(e_a, e_a)[0]
 
-            self.error = [E_a, E_c]
+            self.error = [J, E_c]
             
             if self.train_actor:
                 # update actor weights
                 critic_io_derivatives = self.critic.get_io_gradient(critic_input)
                 dJdx = critic_io_derivatives[:,:x_size]
                 dJdu = critic_io_derivatives[:,x_size:]
-                dxdu = prev_integration_state[x_size:]
+                dxdu = integration_state[x_size:].reshape(x_size, -1)
 
-                true_grad_actor = (dJdu + dJdx @ dxdu).T @ grad_actor
+                true_grad_actor = (dJdu + dJdx @ dxdu) @ grad_actor
+                #true_grad_actor = dJdu @ grad_actor
 
-                actor_weight_delta = true_grad_actor.T.flatten() * -1e-3
+                actor_weight_delta = true_grad_actor.flatten() * -1e-4
+                #actor_weight_delta = (true_grad_actor.T @ e_a).flatten() * -1e-3
                 #actor_weight_delta = levenberg_marquardt(true_grad_actor, e_a, 0.2)
                 self.actor.update_weights(actor_weight_delta)
 
@@ -122,9 +126,31 @@ def acceleration_dynamics(x: np.ndarray, u: np.ndarray) -> np.ndarray:
     return np.array([p_dot, p_ddot, dpdot_du, dpddot_du])
 
 
+def acceleration_dynamics_2d(x: np.ndarray, u: np.ndarray) -> np.ndarray:
+    ''' Also integrates dxdu '''
+    force_multiplier = 10
+
+    x_, x_dot, y, y_dot = x[:4]
+    F = force_multiplier * u
+
+    prev_dxdt_du = x[4:].reshape(4, 2)
+    dxdt_du = np.zeros((4, 2))
+    dxdt_du[0] = prev_dxdt_du[1]
+    dxdt_du[1,0] = force_multiplier
+    dxdt_du[2] = prev_dxdt_du[3]
+    dxdt_du[3,1] = force_multiplier
+    dxdt = np.array([x_dot, F[0], y_dot, F[1]])
+
+    return np.concatenate((dxdt, dxdt_du.flatten()))
+
+
 def acceleration_reward(x: np.ndarray, gamma: float) -> float:
     p, p_dot = x
     return np.sqrt(p**2 + p_dot**2) * (1 - gamma)
+
+
+def acceleration_reward_2d(x: np.ndarray, gamma: float) -> float:
+    return float(np.linalg.norm(x)) * (1 - gamma)
 
 
 def visualize_state(states: np.ndarray, adhdp: ADHDP) -> None:
@@ -148,6 +174,33 @@ def visualize_state(states: np.ndarray, adhdp: ADHDP) -> None:
         #rl.draw_text(f"R = {adhdp.reward_prev}", 10, 10, 12, HIGHLIGHT)
         #rl.draw_text(f"Ec = {adhdp.error[1]}", 10, 20, 12, HIGHLIGHT)
 
+    rl.end_drawing()
+
+
+def visualize_state2d(states: np.ndarray, adhdp: ADHDP) -> None:
+    W, H = rl.get_screen_width(), rl.get_screen_height()
+
+    mid_x = int(W*0.5)
+    mid_y = int(H*0.5)
+
+    rl.begin_drawing()
+    rl.clear_background(BG)
+    for i, state in enumerate(states):
+        x, x_dot, y, y_dot = state
+        rl.draw_circle(mid_x + int(x * 300), mid_y + int(y * 300), 30, FG)
+        rl.draw_line(  mid_x + int(x * 300), mid_y + int(y * 300),
+                       mid_x + int((x + x_dot) * 300), mid_y + int((y + y_dot) * 300), 
+                       HIGHLIGHT)
+
+        if i == 0:
+            J = adhdp.critic.eval(np.concatenate((state, adhdp.actor.eval(state))))
+            reward = acceleration_reward_2d(state, adhdp.gamma)
+            rl.draw_text(f"J = {J}", 10, 10, 16, HIGHLIGHT)
+            rl.draw_text(f"r = {reward}", 10, 30, 16, HIGHLIGHT)
+    #rl.draw_text(f"Ec = {adhdp.error[1]}", 10, 20, 12, HIGHLIGHT)
+
+    rl.draw_line(mid_x, 0, mid_x, H, HIGHLIGHT)
+    rl.draw_line(0, mid_y, W, mid_y, HIGHLIGHT)
     rl.end_drawing()
 
 
@@ -182,16 +235,16 @@ def acceleration_test():
     #    np.linspace(-0.7, 0.7, 5))
     
     #prep_critic(critic)
-    #critic.save_to("saved_networks/pendulum/critic5x5tanh_prep.dat")
-    #critic.save_to("saved_networks/pendulum/critic15tanh_prep.dat")
-    #critic.load_from("saved_networks/pendulum/critic15tanh_prep.dat")
-    #critic.load_from("saved_networks/pendulum/critic5x5tanh_prep.dat")
+    #critic.save_weights_to("saved_networks/acc1d/critic5x5tanh_prep.dat")
+    #critic.save_weights_to("saved_networks/acc1d/critic15tanh_prep.dat")
+    #critic.load_weights_from("saved_networks/acc1d/critic15tanh_prep.dat")
+    #critic.load_weights_from("saved_networks/acc1d/critic5x5tanh_prep.dat")
 
-    #critic.load_from("saved_networks/pendulum/critic_trained_p5.dat")
-    #actor.load_from("saved_networks/pendulum/actor_trained_p5.dat")
+    #critic.load_weights_from("saved_networks/acc1d/critic_trained_p5.dat")
+    #actor.load_weights_from("saved_networks/acc1d/actor_trained_p5.dat")
 
-    critic.load_from("saved_networks/pendulum/critic_trained_p99.dat")
-    #actor.load_from("saved_networks/pendulum/actor_trained_p99.dat")
+    critic.load_weights_from("saved_networks/acc1d/critic_trained_p99.dat")
+    #actor.load_weights_from("saved_networks/acc1d/actor_trained_p99.dat")
 
     adhdp = ADHDP(actor, critic, population)
 
@@ -201,7 +254,7 @@ def acceleration_test():
         rl.init_window(800, 700, "Pendulum")
 
     adhdp.gamma = .99
-    adhdp.train_critic = True
+    adhdp.train_critic = False
     adhdp.train_actor = True
 
     window_closed = False
@@ -222,7 +275,7 @@ def acceleration_test():
         while True:
             dt = TIMESTEP
 
-            state = adhdp.step_and_learn(state, acceleration_dynamics, 
+            state = adhdp.step_and_learn(state, acceleration_dynamics_2d, 
                                          lambda x: acceleration_reward(x, adhdp.gamma), dt)
 
             if time > 10:
@@ -248,8 +301,8 @@ def acceleration_test():
         rl.close_window()
 
 
-    critic.save_to("saved_networks/pendulum/critic_trained_p99.dat")
-    actor.save_to("saved_networks/pendulum/actor_trained_p99.dat")
+    #critic.save_weights_to("saved_networks/acc1d/critic_trained_p99.dat")
+    #actor.save_weights_to("saved_networks/acc1d/actor_trained_p99.dat")
 
     adhdp.plot_actor_critic()
 
@@ -259,7 +312,108 @@ def acceleration_test():
     fig.legend()
 
     plt.show()
+
+
+def acceleration_test_2d():
+    population = 10
+    epochs = 30
+
+    actor_1d = FFNN([
+        Layer.linear(2),
+        Layer.tanh(2),
+        Layer.linear(1),
+    ], (-1, 1), (0,0))
+    actor_1d.load_weights_from("saved_networks/acc1d/actor_trained_p99.dat")
+
+    c_w = 1
+    critic_1d = FFNN([
+        Layer.linear(3),
+        Layer.tanh(5),
+        Layer.tanh(5),
+        Layer.linear(1),
+    ], (-c_w, c_w), (-c_w, c_w))
+    critic_1d.load_weights_from("saved_networks/acc1d/critic_trained_p99.dat")
+
+    actor = FFNN.stack(actor_1d, actor_1d)
+    critic = FFNN.stack(critic_1d, critic_1d)
+    # Need to hack this open to fix the first and last layer
+    last_weights = critic.get_weight_matrix(2)
+    critic.architecture[-1].size = 1
+    critic.weights[critic.offsets[-1]:critic.offsets[-1]+11] = np.sum(last_weights, axis=0)
+    critic.weights = np.resize(critic.weights, critic.offsets[-1]+11)
+
+    mat = critic.get_weight_matrix(0)
+    u1_weights = mat[:,2]
+    mat[:,2] = mat[:,3]
+    mat[:,3] = mat[:,4]
+    mat[:,4] = u1_weights
+    critic.set_weight_matrix(0, mat)
+
+    adhdp = ADHDP(actor, critic, population)
+
+    if DISPLAY:
+        #rl.set_target_fps(10)
+        rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_RESIZABLE)
+        rl.init_window(800, 700, "Pendulum")
+
+    adhdp.gamma = .99
+    adhdp.train_critic = True
+    adhdp.train_actor = True
+
+    window_closed = False
+    error_evolution = np.zeros((epochs, 2))
+    for epoch in range(epochs):
+        state = np.random.uniform(-1, 1, (population, 4))
+
+        if adhdp.gamma < 0.99:
+            adhdp.gamma = 1 - (1-adhdp.gamma) * 0.79
+
+        time = 0
+        error_evolution_run = []
+        for i in range(population):
+            adhdp.J_prev[i] = adhdp.critic.eval(np.concatenate((state[i], np.zeros(2))))
+
+        while True:
+            dt = TIMESTEP
+
+            state = adhdp.step_and_learn(state, acceleration_dynamics_2d, 
+                                         lambda x: acceleration_reward_2d(x, adhdp.gamma), dt)
+
+            #if time > 10:
+            #    break
+
+            if acceleration_reward_2d(state, adhdp.gamma) < 1e-6:
+                break
+
+            # Visualization
+            if DISPLAY:
+                visualize_state2d(state, adhdp)
+                if rl.window_should_close():
+                    window_closed = True
+                    break
+
+            time += dt
+            error_evolution_run.append(adhdp.error)
+
+        if window_closed:
+            break
+
+        error_evolution[epoch] = np.average(np.array(error_evolution_run), axis=0)
+        print(epoch, error_evolution[epoch])
     
+    if DISPLAY:
+        rl.close_window()
+
+    critic.save_weights_to("saved_networks/acc2d/critic_trained_p99.dat")
+    actor.save_weights_to("saved_networks/acc2d/actor_trained_p99.dat")
+
+
+    fig, ax = plt.subplots(1, 1)
+    ax.plot(error_evolution[:,0], label='actor')
+    ax.plot(error_evolution[:,1], label='critic')
+    fig.legend()
+
+    plt.show()
 
 
 def prep_critic(critic: Network):
@@ -276,6 +430,8 @@ def prep_critic(critic: Network):
 
     plt.plot(ee)
     plt.show()
-    
+
+
 if __name__ == "__main__":
-    acceleration_test()
+    #acceleration_test()
+    acceleration_test_2d()
