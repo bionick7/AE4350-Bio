@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 import pyray as rl
-from typing import Callable
 from copy import copy
 
 from common import *
@@ -13,14 +12,6 @@ from networks import Network, Layer, FFNN, RBFNN, levenberg_marquardt
 TIMESTEP = 0.1
 DISPLAY = True
 
-def rk4(f_dynamics: Callable[[np.ndarray, np.ndarray], np.ndarray], 
-        x: np.ndarray, u: np.ndarray, dt: float):
-    k1 = f_dynamics(x, u)
-    k2 = f_dynamics(x + k1*dt/2, u)
-    k3 = f_dynamics(x + k2*dt/2, u)
-    k4 = f_dynamics(x + k3*dt, u)
-    x += (k1 + 2*k2 + 2*k3 + k4) * dt / 6
-    return x
 
 class Acc1D(ADHDPState):
     @classmethod
@@ -36,7 +27,7 @@ class Acc1D(ADHDPState):
 
         return np.array([p_dot, p_ddot, dpdot_du, dpddot_du])
 
-    def stepped(self, u: np.ndarray, dt: float) -> Acc1D:
+    def step_forward(self, u: np.ndarray, dt: float) -> Acc1D:
         next_states = np.zeros(self.internal_state.shape)
         for i in range(len(self.internal_state)):
             next_states[i] = rk4(self._dynamics, self.internal_state[i], u[i], dt)
@@ -76,7 +67,7 @@ class Acc2D(ADHDPState):
 
         return np.concatenate((dxdt, dxdt_du.flatten()))
 
-    def stepped(self, u: np.ndarray, dt: float) -> Acc2D:
+    def step_forward(self, u: np.ndarray, dt: float) -> Acc2D:
         next_states = np.zeros(self.internal_state.shape)
         for i in range(len(self.internal_state)):
             next_states[i] = rk4(self._dynamics, self.internal_state[i], u[i], dt)
@@ -91,9 +82,6 @@ class Acc2D(ADHDPState):
     def get_reward(self) -> np.ndarray:
         gamma = 0.99
         return np.linalg.norm(self.get_x(), axis=1) * (1 - gamma)
-
-    def __copy__(self) -> ADHDPState:
-        return ADHDPState(self.internal_state.copy())
 
 
 def visualize_state(states: ADHDPState, adhdp: ADHDP) -> None:
@@ -294,6 +282,9 @@ def acceleration_test_2d():
     mat[:,4] = u1_weights
     critic.set_weight_matrix(0, mat)
 
+    critic.load_weights_from("saved_networks/acc2d/critic_trained_p99.dat")
+    actor.load_weights_from("saved_networks/acc2d/actor_trained_p99.dat")
+
     adhdp = ADHDP(actor, critic, population)
 
     if DISPLAY:
@@ -302,8 +293,8 @@ def acceleration_test_2d():
         rl.init_window(800, 700, "Pendulum")
 
     adhdp.gamma = .99
-    adhdp.train_critic = True
-    adhdp.train_actor = True
+    adhdp.train_critic = False
+    adhdp.train_actor = False
 
     window_closed = False
     error_evolution = np.zeros((epochs, 2))
@@ -380,5 +371,5 @@ def prep_critic(critic: Network):
 
 
 if __name__ == "__main__":
-    acceleration_test()
-    #acceleration_test_2d()
+    #acceleration_test()
+    acceleration_test_2d()

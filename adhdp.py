@@ -13,7 +13,7 @@ class ADHDPState:
     def __init__(self, p_internal_state: np.ndarray):
         self.internal_state = p_internal_state
 
-    def stepped(self, u: np.ndarray, dt: float) -> ADHDPState:
+    def step_forward(self, u: np.ndarray, dt: float) -> ADHDPState:
         res = copy(self)
         return res
 
@@ -60,7 +60,7 @@ class ADHDP:
         for i in range(len(states)):
             u[i], grad_actor[i] = self.actor.get_weight_gradient(actor_inputs[i])
 
-        next_states = states.stepped(u, dt)
+        next_states = states.step_forward(u, dt)
         next_actor_inputs = next_states.get_x()
         next_dxdu = next_states.get_dxdu()
         rewards = next_states.get_reward()
@@ -93,11 +93,11 @@ class ADHDP:
                 dxdu = next_dxdu[i].reshape(x_size, -1)
 
                 true_grad_actor = (dJdu + dJdx @ dxdu) @ grad_actor[i]
-                #true_grad_actor = dJdu @ grad_actor
+                #true_grad_actor = dJdu @ grad_actor[i]
 
                 actor_weight_delta = true_grad_actor.flatten() * -1e-4
                 #actor_weight_delta = (true_grad_actor.T @ e_a).flatten() * -1e-3
-                #actor_weight_delta = levenberg_marquardt(true_grad_actor, e_a, 0.2)
+                #actor_weight_delta = levenberg_marquardt(true_grad_actor, e_a, 0.01)
                 self.actor.update_weights(actor_weight_delta)
 
             self.reward_prev[i] = reward

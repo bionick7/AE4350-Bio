@@ -28,7 +28,8 @@ class Network:
         raise NotImplementedError("Not available in base class")
 
     def load_weights_from(self, filepath: str):
-        self.weights = np.loadtxt(filepath)
+        self.weights *= 0
+        self.update_weights(np.loadtxt(filepath))
     
     def save_weights_to(self, filepath: str):
         np.savetxt(filepath, self.weights)
