@@ -303,7 +303,7 @@ def acceleration_test_2d():
     adhdp.train_critic = True
     adhdp.train_actor = True
     adhdp.train_plant = True
-    adhdp.use_plant = True
+    adhdp.use_plant = False
     #adhdp.plant_learning_rate = 1e-3
 
     window_closed = False

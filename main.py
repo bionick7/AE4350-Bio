@@ -97,38 +97,54 @@ class TrackState(ADHDPState):
         x[:,2:4] = self.internal_state[:,2:4] / POS_MULTIPLIER
         x[:,2:4] = transform2d(x[:,2:4], self.retaining.transf)
 
-        self.rays = self.track.get_input(self.internal_state[:,:5], self.n_rays, self.retaining.transf)
-        x[:,4:] = np.exp(-4*np.maximum(self.rays, 0)/self.track.track_width)
-        #x[:,4:] = np.minimum(np.maximum(2*rays/self.track.track_width, 1e-3), 1)
-        x *= (1 - self.collision_mask.astype(float)[:,np.newaxis])
+        self.rays, self.ray_normals = self.track.get_input(self.internal_state[:,:5], self.n_rays, self.retaining.transf)
+        rays_outp = np.exp(-4*np.maximum(self.rays, 0)/self.track.track_width)
+        x[:,4:] = rays_outp
+        #x[:,4:] = rays_outp[:,self.n_rays//2] - rays_outp[self.n_rays//2,:]
         return x
 
     def get_dxdu(self) -> np.ndarray:
         dxdu = np.zeros((len(self), 4 + self.n_rays, 2))
-        dxdu[:,:4] = self.internal_state[:,5:].reshape(-1, 4, 2) / POS_MULTIPLIER
+        #dxdu[:,:4] = self.internal_state[:,5:].reshape(-1, 4, 2) / POS_MULTIPLIER
+
+        force_multiplier = 1
+        dt = 0.1
+        dxdu[:,:4] = np.array([[force_multiplier*dt*dt*.5, 0],
+                               [0, force_multiplier*dt*dt*.5],
+                               [force_multiplier*dt, 0],
+                               [0, force_multiplier*dt],
+                               ]) / POS_MULTIPLIER
         
         angles = np.linspace(0, np.pi*2, self.n_rays+1)[:-1]
-        dray_du = np.cos(angles)[np.newaxis,:,np.newaxis] * dxdu[:,np.newaxis,0] * POS_MULTIPLIER \
-                + np.sin(angles)[np.newaxis,:,np.newaxis] * dxdu[:,np.newaxis,1] * POS_MULTIPLIER
+        rx, ry = np.cos(angles)[np.newaxis,:], np.sin(angles)[np.newaxis,:]
+        nx, ny = self.ray_normals[:,:,0], self.ray_normals[:,:,1]
+        r_dot_n = rx*nx + ry*ny + 1e-10
+        dray_dx_ = nx / r_dot_n
+        dray_dy = ny / r_dot_n
+        dray_du = (dray_dx_[:,:,np.newaxis] * dxdu[:,np.newaxis,0] + dray_dy[:,:,np.newaxis] * dxdu[:,np.newaxis,1]) * POS_MULTIPLIER
         
         for i in range(2):
             dxdu[:, :2,i] = transform2d(dxdu[:, :2,i], self.retaining.transf)
             dxdu[:,2:4,i] = transform2d(dxdu[:,2:4,i], self.retaining.transf)
             dray_du[:,:,i] = transform2d(dray_du[:,:,i], self.retaining.transf)
 
-        rays_x = np.exp(-4*np.maximum(self.rays, 0)/self.track.track_width)
-        dxdu[:,4:] = -4/self.track.track_width * rays_x[:,:,np.newaxis] * dray_du
+        x_rays = np.exp(-4*np.maximum(self.rays, 0)/self.track.track_width)
+        dx_dray = -4/self.track.track_width * x_rays[:,:,np.newaxis]
+        dxdu[:,4:] = dray_du * dx_dray
         #dxdu[:,4:] = dray_du * self.track.track_width/2
 
         #dxdu[:,:4] = 0
+        dxdu *= (1 - self.collision_mask.astype(float)[:,np.newaxis,np.newaxis])
         return dxdu
 
     def get_reward(self, adhdp: ADHDP) -> np.ndarray:
         along_tracks, across_tracks = self.track.get_track_coordinates(self.internal_state[:,:5]).T
         center_distance = 2*np.abs(across_tracks) / self.track.track_width
         tgt_distance = np.linalg.norm(self.internal_state[:,:2] - self.retaining.aim_pts, axis=1) / POS_MULTIPLIER
-        #return (center_distance + tgt_distance) * (1 - adhdp.gamma)
+        #return (center_distance + tgt_distance) * (1 - adhdp.gamma) + self.collision_mask.astype(float)
         return center_distance * (1 - adhdp.gamma) + self.collision_mask.astype(float)
+        #return self.collision_mask.astype(float)
+        #return along_tracks * 0
     
     def get_positions(self) -> np.ndarray:
         return self.internal_state[:,:5]
@@ -344,10 +360,10 @@ def main():
     adhdp.gamma = 0.99
 
     adhdp.train_actor = True
-    adhdp.train_critic = False
+    adhdp.train_critic = True
     adhdp.train_plant = False
     adhdp.use_plant = False
-    adhdp.actor_learning_rate = 1e-4
+    adhdp.actor_learning_rate = 1e-3
     adhdp.critic_learning_rate = 1e-3
     adhdp.plant_learning_rate = 1e-2
 

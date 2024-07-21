@@ -13,8 +13,8 @@ class TrackWall:
     def draw(self) -> None:
         pass
 
-    def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> np.ndarray:
-        return np.ones(len(ray_directions)) * np.inf
+    def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return np.ones(len(ray_directions)) * np.inf, np.ones((len(ray_directions),2)) * np.inf
 
 
 class TrackWallLine(TrackWall):
@@ -27,7 +27,7 @@ class TrackWallLine(TrackWall):
         rl.draw_line(int(self.start[0]), int(self.start[1]),
                      int(self.end[0]), int(self.end[1]), FG)
 
-    def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> np.ndarray:
+    def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         # https://rootllama.wordpress.com/2014/06/20/ray-line-segment-intersection-test-in-2d/
 
         v1 = ray_origin - self.start
@@ -40,7 +40,12 @@ class TrackWallLine(TrackWall):
         t1[t2 < 0] = np.inf
         t1[t2 > 1] = np.inf
         t1[t1 < 0] = np.inf
-        return t1
+
+        normal = v2[[1,0]] / np.linalg.norm(v2)
+        if np.dot(v1, normal) > 0:
+            normal *= -1
+
+        return t1, normal
     
     def __repr__(self) -> str:
         return f"[Linear wall from ({self.start[0]}, {self.start[1]}) -> ({self.end[0]}, {self.end[1]})]"
@@ -108,16 +113,16 @@ class TrackWallArc(TrackWall):
     def draw(self) -> None:
         rl.draw_line_strip(self.pts, len(self.pts), FG)
 
-    def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> np.ndarray:
+    def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         o =  ray_origin - self.center
 
         # Quadratic equation
-        b = 2*ray_directions.dot(o)        # array
-        c = o@o - self.radius*self.radius  # float
+        b: np.ndarray = 2*ray_directions.dot(o)
+        c: float = float(o@o) - self.radius*self.radius
 
         delta = b*b-4*c
         
-        t12 = np.ones((2, len(ray_directions)))*np.inf
+        t12 = np.ones((2, len(ray_directions))) * np.inf
         t12[0, delta > 0] = 0.5 * (-b[delta > 0] - np.sqrt(delta[delta > 0]))
         t12[1, delta > 0] = 0.5 * (-b[delta > 0] + np.sqrt(delta[delta > 0]))
         t12[t12 < 0] = np.inf
@@ -138,7 +143,17 @@ class TrackWallArc(TrackWall):
         ang_delta = a_r - a_l
         t12[angular_diff > ang_delta] = np.inf
 
-        return np.minimum(t12[0], t12[1])
+        res = np.minimum(t12[0], t12[1])
+
+        normals = impact2.copy()
+        normals[t12[0] < t12[1]] = impact1[t12[0] < t12[1]]
+        normals /= np.linalg.norm(normals, axis=1)[:,np.newaxis]
+        normals[np.isinf(res),:] = np.inf
+
+        unaligned = ray_directions[:,0]*normals[:,0] + ray_directions[:,1]*normals[:,1] < 0
+        normals[unaligned] *= -1
+        
+        return res, normals
 
     def __repr__(self) -> str:
         return f"[circular wall from at ({self.center[0]}, {self.center[1]}), R = {self.radius} a in ({self.a1}, {self.a2})]"
@@ -153,12 +168,16 @@ class TrackSegment:
         for wall in self.walls:
             wall.draw()
     
-    def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> np.ndarray:
+    def check_collision_rays(self, ray_origin: np.ndarray, ray_directions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         collisions_search = np.zeros([len(self.walls), len(ray_directions)])
+        normal_search = np.zeros([len(self.walls), len(ray_directions), 2])
         for wall_index, wall in enumerate(self.walls):
-            collisions_search[wall_index] = wall.check_collision_rays(ray_origin, ray_directions)
-        collisions = np.min(collisions_search, axis=0)
-        return collisions
+            collisions_search[wall_index], normal_search[wall_index] = wall.check_collision_rays(ray_origin, ray_directions)
+        # Take minima
+        selector = np.argmin(collisions_search, axis=0)[np.newaxis,:]
+        collisions = np.take_along_axis(collisions_search, selector, 0)[0]
+        normals = np.take_along_axis(normal_search, selector[:,:,np.newaxis], 0)[0]
+        return collisions, normals
     
     def get_closest_point_on_track(self, pt: np.ndarray) -> np.ndarray:
         raise NotImplementedError("Not implemented in base class")
@@ -291,12 +310,13 @@ class Track:
         for i in range(N):
             self.adjacencies.append([(i+1) % N, (i-1) % N])
 
-    def get_input(self, states: np.ndarray, N_rays: int, R: np.ndarray=np.eye(2)[np.newaxis,:,:]) -> np.ndarray:
+    def get_input(self, states: np.ndarray, N_rays: int, R: np.ndarray=np.eye(2)[np.newaxis,:,:]) -> tuple[np.ndarray, np.ndarray]:
         ''' Returns sensor readings evaluated at a certain point 
             states: Nx4 array of generation states
             returns: Nx? array of sensor positions corresponding to positions'''
         N = len(states)
         inp = np.zeros((N, N_rays))
+        normals = np.zeros((N, N_rays, 2))
         angles = np.linspace(0, np.pi*2, N_rays+1)[np.newaxis,:-1]
         rays = np.zeros((len(states), N_rays, 2))
 
@@ -305,8 +325,8 @@ class Track:
 
         for state_index, state in enumerate(states):
             segment_index = int(floor(state[4] % len(self.segments)))
-            inp[state_index] = self.check_collision_rays(segment_index, state[:2], rays[state_index])
-        return inp
+            inp[state_index], normals[state_index] = self.check_collision_rays(segment_index, state[:2], rays[state_index])
+        return inp, normals
     
     def check_collisions(self, states: np.ndarray, u: np.ndarray, step: np.ndarray) -> np.ndarray:
         ''' Advances simulation by one step
@@ -335,31 +355,35 @@ class Track:
 
         return res
 
-    def check_collision_rays(self, root_index: int, 
-                             origin: np.ndarray, rays: np.ndarray) -> np.ndarray:
-        collisions = self.segments[root_index].check_collision_rays(origin, rays)
+    def check_collision_rays(self, root_index: int, origin: np.ndarray, 
+                             rays: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        collisions, normals = self.segments[root_index].check_collision_rays(origin, rays)
 
         checked = [root_index]
         search_queue = self.adjacencies[root_index][:]
         next_search_queue = []
         filter = np.isinf(collisions)
+        extended_filter = np.isinf(collisions)
         while len(next_search_queue) > 0 or len(search_queue) > 0:
             while len(search_queue) > 0:
                 index = search_queue.pop(0)
                 if index not in checked:
                     checked.append(index)
                     next_search_queue += self.adjacencies[index]
-                    collision_checks = self.segments[index].check_collision_rays(origin, rays[filter])
-                    collisions[filter] = np.minimum(collisions[filter], collision_checks)
+                    collision_checks, normal_checks = self.segments[index].check_collision_rays(origin, rays[filter])
+                    extended_filter *= False
+                    extended_filter[filter] = collision_checks < collisions[filter]
+                    collisions[extended_filter] = collision_checks[extended_filter[filter]]
+                    normals[extended_filter] = normal_checks[extended_filter[filter]]
 
             # Each step down the tree: update filter
             search_queue = next_search_queue[:]
             next_search_queue.clear()
             filter = np.isinf(collisions)
             if not np.any(filter):
-                return collisions
+                return collisions, normals
 
-        return collisions
+        return collisions, normals
 
     def get_path_dir(self, state: np.ndarray) -> np.ndarray:
         segment_indices = (np.floor(state[:,4] % len(self.segments))).astype(np.int32)
@@ -413,16 +437,22 @@ class Track:
         rays[:,0] = np.cos(angles)
         rays[:,1] = np.sin(angles)
 
-        ll = self.check_collision_rays(segment_index, p_test, rays)
+        ll, nn = self.check_collision_rays(segment_index, p_test, rays)
         #print(ll)
         #print(self.adjacencies)
         for i in range(N_rays):
             dist = min(ll[i], 1e4)  # Make it finite
 
             impact = p_test + dist * rays[i]
+            normal = nn[i]
             rl.draw_line_v(
                 rl.Vector2(p_test[0], p_test[1]),
                 rl.Vector2(impact[0], impact[1]), HIGHLIGHT
+            )
+            normal_draw_end = impact + normal * 100
+            rl.draw_line_v(
+                rl.Vector2(impact[0], impact[1]),
+                rl.Vector2(normal_draw_end[0], normal_draw_end[1]), rl.BLUE
             )
 
 
