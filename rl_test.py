@@ -9,9 +9,9 @@ from common import *
 from adhdp import ADHDP, ADHDPState
 from networks import Network, Layer, FFNN, RBFNN, levenberg_marquardt
 
+FPS = 3000000
 TIMESTEP = 0.1
 DISPLAY = True
-
 
 class Acc1D(ADHDPState):
     @classmethod
@@ -29,8 +29,10 @@ class Acc1D(ADHDPState):
 
     def step_forward(self, u: np.ndarray, dt: float) -> Acc1D:
         next_states = np.zeros(self.internal_state.shape)
+        init_states = np.zeros(self.internal_state.shape)
+        init_states[:2] = self.internal_state[:2]
         for i in range(len(self.internal_state)):
-            next_states[i] = rk4(self._dynamics, self.internal_state[i], u[i], dt)
+            next_states[i] = rk4(self._dynamics, init_states[i], u[i], dt)
         return Acc1D(next_states)
 
     def get_x(self) -> np.ndarray:
@@ -39,10 +41,9 @@ class Acc1D(ADHDPState):
     def get_dxdu(self) -> np.ndarray:
         return self.internal_state[:,2:].reshape(-1, 2, 1)
 
-    def get_reward(self) -> np.ndarray:
-        gamma = 0.99
+    def get_reward(self, adhdp: ADHDP) -> np.ndarray:
         p, p_dot, *_ = self.internal_state.T
-        return np.sqrt(p*p + p_dot*p_dot) * (1 - gamma)
+        return np.sqrt(p*p + p_dot*p_dot) * (1 - adhdp.gamma)
 
     def __copy__(self) -> ADHDPState:
         return ADHDPState(self.internal_state.copy())
@@ -69,8 +70,10 @@ class Acc2D(ADHDPState):
 
     def step_forward(self, u: np.ndarray, dt: float) -> Acc2D:
         next_states = np.zeros(self.internal_state.shape)
+        init_states = np.zeros(self.internal_state.shape)
+        init_states[:4] = self.internal_state[:4]
         for i in range(len(self.internal_state)):
-            next_states[i] = rk4(self._dynamics, self.internal_state[i], u[i], dt)
+            next_states[i] = rk4(self._dynamics, init_states[i], u[i], dt)
         return Acc2D(next_states)
 
     def get_x(self) -> np.ndarray:
@@ -79,9 +82,8 @@ class Acc2D(ADHDPState):
     def get_dxdu(self) -> np.ndarray:
         return self.internal_state[:,4:].reshape(-1, 4, 2)
 
-    def get_reward(self) -> np.ndarray:
-        gamma = 0.99
-        return np.linalg.norm(self.get_x(), axis=1) * (1 - gamma)
+    def get_reward(self, adhdp: ADHDP) -> np.ndarray:
+        return np.linalg.norm(self.get_x(), axis=1) * (1 - adhdp.gamma)
 
 
 def visualize_state(states: ADHDPState, adhdp: ADHDP) -> None:
@@ -126,7 +128,7 @@ def visualize_state2d(states: ADHDPState, adhdp: ADHDP) -> None:
                        HIGHLIGHT)
         J[i] = adhdp.critic.eval(np.concatenate((xx, adhdp.actor.eval(xx))))
 
-    reward = np.average(states.get_reward())
+    reward = np.average(states.get_reward(adhdp))
     rl.draw_text(f"J = {np.average(J)}", 10, 10, 16, HIGHLIGHT)
     rl.draw_text(f"r = {reward}", 10, 30, 16, HIGHLIGHT)
     #rl.draw_text(f"Ec = {adhdp.error[1]}", 10, 20, 12, HIGHLIGHT)
@@ -181,7 +183,7 @@ def acceleration_test():
     adhdp = ADHDP(actor, critic, population)
 
     if DISPLAY:
-        #rl.set_target_fps(10)
+        rl.set_target_fps(FPS)
         rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_RESIZABLE)
         rl.init_window(800, 700, "Pendulum")
 
@@ -202,9 +204,7 @@ def acceleration_test():
 
         time = 0
         error_evolution_run = []
-        x_init = state.get_x()
-        for i in range(population):
-            adhdp.J_prev[i] = adhdp.critic.eval(np.append(x_init[i], 0))
+        adhdp.reinitialize(state)
 
         while True:
             dt = TIMESTEP
@@ -255,7 +255,7 @@ def acceleration_test_2d():
         Layer.linear(2),
         Layer.tanh(2),
         Layer.linear(1),
-    ], (-1, 1), (0,0))
+    ], (-1, 1), (-1, 1))
     actor_1d.load_weights_from("saved_networks/acc1d/actor_trained_p99.dat")
 
     c_w = 1
@@ -282,45 +282,56 @@ def acceleration_test_2d():
     mat[:,4] = u1_weights
     critic.set_weight_matrix(0, mat)
 
-    critic.load_weights_from("saved_networks/acc2d/critic_trained_p99.dat")
-    actor.load_weights_from("saved_networks/acc2d/actor_trained_p99.dat")
+    plant = FFNN([
+        Layer.linear(6),
+        Layer.sigmoid(10),
+        Layer.linear(4),
+    ], (-100, 100), (-100, 100))
+    plant.load_weights_from("saved_networks/acc2d/plant_trained_p99.dat")
 
-    adhdp = ADHDP(actor, critic, population)
+    #critic.load_weights_from("saved_networks/acc2d/critic_trained_p99.dat")
+    #actor.load_weights_from("saved_networks/acc2d/actor_trained_p99.dat")
+
+    adhdp = ADHDP(actor, critic, plant, population)
 
     if DISPLAY:
-        #rl.set_target_fps(10)
+        rl.set_target_fps(FPS)
         rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_RESIZABLE)
-        rl.init_window(800, 700, "Pendulum")
+        rl.init_window(800, 700, "Acc2D")
 
     adhdp.gamma = .99
-    adhdp.train_critic = False
-    adhdp.train_actor = False
+    adhdp.train_critic = True
+    adhdp.train_actor = True
+    adhdp.train_plant = True
+    adhdp.use_plant = True
+    #adhdp.plant_learning_rate = 1e-3
 
     window_closed = False
-    error_evolution = np.zeros((epochs, 2))
+    error_evolution = np.zeros((epochs, 3))
     for epoch in range(epochs):
         state_init = np.hstack((np.random.uniform(-1, 1, (population, 4)), 
                                 np.zeros((population, 8))))
         state = Acc2D(state_init)
+
+        #if epoch > 5:
+        #    adhdp.use_plant = True
 
         if adhdp.gamma < 0.99:
             adhdp.gamma = 1 - (1-adhdp.gamma) * 0.79
 
         time = 0
         error_evolution_run = []
-        x_init = state.get_x()
-        for i in range(population):
-            adhdp.J_prev[i] = adhdp.critic.eval(np.concatenate(((x_init[i], np.zeros(2)))))
+        adhdp.reinitialize(state)
 
         while True:
             dt = TIMESTEP
 
             state = adhdp.step_and_learn(state, dt)
 
-            #if time > 10:
-            #    break
+            if time > 10:
+                break
 
-            if np.average(state.get_reward()) < 1e-6:
+            if np.average(state.get_reward(adhdp)) < 1e-4:
                 break
 
             # Visualization
@@ -331,12 +342,12 @@ def acceleration_test_2d():
                     break
 
             time += dt
-            error_evolution_run.append(adhdp.error)
+            error_evolution_run.append(adhdp.error.copy())
 
         if window_closed:
             break
 
-        error_evolution[epoch] = np.average(np.array(error_evolution_run), axis=0)
+        error_evolution[epoch] = np.average(np.average(np.array(error_evolution_run), axis=2), axis=0)
         print(epoch, error_evolution[epoch])
     
     if DISPLAY:
@@ -344,11 +355,13 @@ def acceleration_test_2d():
 
     #critic.save_weights_to("saved_networks/acc2d/critic_trained_p99.dat")
     #actor.save_weights_to("saved_networks/acc2d/actor_trained_p99.dat")
-
+    #plant.save_weights_to("saved_networks/acc2d/plant_trained_p99.dat")
+    plant.show_weights()
 
     fig, ax = plt.subplots(1, 1)
     ax.plot(error_evolution[:,0], label='actor')
     ax.plot(error_evolution[:,1], label='critic')
+    ax.plot(error_evolution[:,2], label='plant')
     fig.legend()
 
     plt.show()

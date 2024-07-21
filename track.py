@@ -33,8 +33,9 @@ class TrackWallLine(TrackWall):
         v1 = ray_origin - self.start
         v2 = self.end - self.start
         v3 = np.flip(ray_directions, axis=1) * np.array([-1, 1])
-        t1 = np.reciprocal(v3.dot(v2)) * np.cross(v2, v1)
-        t2 = np.reciprocal(v3.dot(v2)) * v3.dot(v1)
+        v3dv2_inv = 1 / v3.dot(v2)
+        t1 = v3dv2_inv * np.cross(v2, v1)
+        t2 = v3dv2_inv * v3.dot(v1)
 
         t1[t2 < 0] = np.inf
         t1[t2 > 1] = np.inf
@@ -290,55 +291,49 @@ class Track:
         for i in range(N):
             self.adjacencies.append([(i+1) % N, (i-1) % N])
 
-    def get_input(self, states: np.ndarray, N_rays: int, R: np.ndarray=np.eye(2)) -> np.ndarray:
+    def get_input(self, states: np.ndarray, N_rays: int, R: np.ndarray=np.eye(2)[np.newaxis,:,:]) -> np.ndarray:
         ''' Returns sensor readings evaluated at a certain point 
             states: Nx4 array of generation states
             returns: Nx? array of sensor positions corresponding to positions'''
         N = len(states)
         inp = np.zeros((N, N_rays))
-        angles = np.linspace(0, np.pi*2, N_rays+1)[:-1]
-        rays = np.zeros((N_rays, 2))
+        angles = np.linspace(0, np.pi*2, N_rays+1)[np.newaxis,:-1]
+        rays = np.zeros((len(states), N_rays, 2))
 
-        rays[:,0] = R[0,0]*np.cos(angles) + R[0,1]*np.sin(angles)
-        rays[:,1] = R[1,0]*np.cos(angles) + R[1,1]*np.sin(angles)
+        rays[:,:,0] = R[:,0,0:1]*np.cos(angles) + R[:,0,1:2]*np.sin(angles)
+        rays[:,:,1] = R[:,1,0:1]*np.cos(angles) + R[:,1,1:2]*np.sin(angles)
 
         for state_index, state in enumerate(states):
             segment_index = int(floor(state[4] % len(self.segments)))
-            inp[state_index] = self.check_collision_rays(segment_index, state[:2], rays)
+            inp[state_index] = self.check_collision_rays(segment_index, state[:2], rays[state_index])
         return inp
     
-    def simulation_step(self, states: np.ndarray, outp: np.ndarray, dt: float) -> np.ndarray:
+    def check_collisions(self, states: np.ndarray, u: np.ndarray, step: np.ndarray) -> np.ndarray:
         ''' Advances simulation by one step
-            states: Nx4 array of generation states
-            outp: Nx2 array with accelerations
-            returns: Nx? array of sensor positions corresponding to positions'''
-        step = states[:,2:4] * dt + outp * dt*dt*.5
-        states[:,2:4] += outp * dt
+            states: Nx5 array of current states
+            u: Nx2 array with accelerations
+            step: Nx2 array with steps
+            returns: Nx4 array of collision positions and normals (inf if no collision)'''
+        #step = states[:,2:4] * dt + u * dt*dt*.5
+        #states[:,2:4] += u * dt
 
         step_norms = np.linalg.norm(step, axis=1) + 1e-9  # avoid 0-division
         collision_dirs = (step.T / step_norms.T).T
 
-        for state_index, state in enumerate(states):
-            segment_index = int(floor(state[4] % len(self.segments)))
-            lap_index = int(floor(state[4]) // len(self.segments))
-            collision_dist = self.check_collision_rays(segment_index, state[:2], collision_dirs[np.newaxis, state_index])[0]
-            if step_norms[state_index] < collision_dist:
-                # No collision
-                states[state_index,:2] += step[state_index]
-            else:  
+        res = np.ones((len(states), 4)) * np.infty
+
+        for pos_index, pos in enumerate(states):
+            segment_index = int(floor(pos[4] % len(self.segments)))
+            collision_dist = self.check_collision_rays(segment_index, pos[:2], collision_dirs[np.newaxis, pos_index])[0]
+            if step_norms[pos_index] >= collision_dist:
                 # Collision
-                impact_point = state[:2] + collision_dirs[state_index] * collision_dist
+                impact_point = pos[:2] + collision_dirs[pos_index] * collision_dist
                 closest = self.segments[segment_index].get_closest_point_on_track(impact_point)
                 normal = (closest - impact_point) / np.linalg.norm(closest - impact_point)
-                states[state_index,:2] = impact_point + normal * 0.01
-                states[state_index,2:4] = normal * 0.1
-                
-            # Update track distance
-            along_track, across_track = self.segments[segment_index].get_track_coordinates(states[np.newaxis, state_index,:2])[0]
-            states[state_index,4] = lap_index * len(self.segments) + segment_index +\
-                                    along_track / self.segments[segment_index].length
+                res[pos_index,:2] = impact_point
+                res[pos_index,2:] = normal
 
-        return states
+        return res
 
     def check_collision_rays(self, root_index: int, 
                              origin: np.ndarray, rays: np.ndarray) -> np.ndarray:
@@ -399,6 +394,7 @@ class Track:
             rl.draw_line(int(pos[0]), int(pos[1]), int(pos2[0]), int(pos2[1]), color)
 
     def evaluate_path(self, spawns: np.ndarray) -> np.ndarray:
+        spawns = np.mod(spawns, len(self.segments))
         positions = np.zeros((len(spawns), 2))
         segment_indecies = (np.floor(spawns) % len(self.segments)).astype(np.int32)
         for i, segment in enumerate(self.segments):

@@ -312,6 +312,20 @@ class FFNN(Network):
 
         return dy_dv[0]
     
+    def show_weights(self):
+        import matplotlib.pyplot as plt
+
+        N_layers = len(self.architecture) - 1
+        fig = plt.figure()
+        axes = fig.subplots(N_layers, 1, sharex=True)
+        if N_layers > 1:
+            for i in range(N_layers):
+                c = axes[i].imshow(self.get_weight_matrix(i))
+        else:
+            c = axes.imshow(self.get_weight_matrix(0))
+        fig.colorbar(c)
+        
+
     @classmethod
     def stack(cls, *args: FFNN) -> FFNN:
         assert len(args) > 0
