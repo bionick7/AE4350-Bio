@@ -29,14 +29,17 @@ class ADHDPState:
         DELTA_T = 0.1
         dsdu = self.get_dsdu(DELTA_T)
         dsdu_fd = np.zeros(dsdu.shape)
-        u = np.zeros(dsdu.shape[1])
-        for u_axis in range(dsdu.shape[1]):
-            u[u_axis] = EPSILON_U
-            s_plus = self.step_forward(u, DELTA_T).get_s()
-            u[u_axis] = -EPSILON_U
-            s_minus = self.step_forward(u, DELTA_T).get_s()
-            dsdu_fd[:,u_axis] = (s_plus - s_minus) / (2*EPSILON_U)
-        print(np.average(np.abs(dsdu_fd - dsdu), axis=0) / np.max(dsdu, axis=0))
+        dpdu_fd = np.zeros((self.internal_state.shape[0], self.internal_state.shape[1], dsdu.shape[2]))
+        u = np.zeros((dsdu.shape[0], dsdu.shape[2]))
+        for u_axis in range(dsdu.shape[2]):
+            u[:,u_axis] = EPSILON_U
+            state_plus = self.step_forward(u, DELTA_T)
+            u[:,u_axis] = -EPSILON_U
+            state_minus = self.step_forward(u, DELTA_T)
+            dsdu_fd[:,:,u_axis] = (state_plus.get_s() - state_minus.get_s()) / (2*EPSILON_U)
+            dpdu_fd[:,:,u_axis] = (state_plus.internal_state - state_minus.internal_state) / (2*EPSILON_U)
+            
+        print(dsdu_fd / dsdu)
 
     def get_reward(self, adhdhp: 'ADHDP') -> np.ndarray:
         return np.zeros(len(self))
@@ -143,7 +146,7 @@ class ADHDP:
                 else:
                     dsdu_ = dsdu[i].reshape(self.s_size, self.u_size)
 
-                true_grad_actor = (dJdu + dJds @ dsdu_) @ grad_actor
+                #true_grad_actor = (dJdu + dJds @ dsdu_) @ grad_actor
                 #true_grad_actor = dJdu @ grad_actor
                 true_grad_actor = dJds @ dsdu_ @ grad_actor
 
