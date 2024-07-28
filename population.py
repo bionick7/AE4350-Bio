@@ -5,6 +5,7 @@ from networks import FFNN, Layer
 from random import randint, random
 import numpy as np
 from math import sin, cos, sqrt, fabs
+import os.path
 
 class GAPopulation:
     def __init__(self, population: int, genes: int, **kwargs):
@@ -57,10 +58,10 @@ class GAPopulation:
             self.genepool[best_index] = best_gene_in_generation
 
     def save(self, filepath: str) -> None:
-        np.savetxt(filepath, self.genepool)
+        np.savetxt(os.path.join("saved_networks", filepath), self.genepool)
 
     def load(self, filepath: str) -> None:
-        data = np.loadtxt(filepath)
+        data = np.loadtxt(os.path.join("saved_networks", filepath))
         data_pop, data_gen = data.shape
         if data_pop == self.population_count and data_gen == self.genes_per_specimen:
             self.genepool = np.loadtxt(filepath)
@@ -140,9 +141,9 @@ def test_ga():
         pop.genetic_selection(fitness)
 
     print(pop.best_val, pop.best_gene)
-    pop.save("saved_networks/test_save.dat")
+    pop.save("test_save.dat")
     pop2 = GAPopulation(40, 2)
-    pop2.load("saved_networks/test_save.dat")
+    pop2.load("test_save.dat")
     print(np.sum(np.square(pop.genepool - pop2.genepool)))
     
 if __name__ == "__main__":

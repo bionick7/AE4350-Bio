@@ -9,17 +9,17 @@ from common import *
 from adhdp import ADHDP, ADHDPState
 from networks import Network, Layer, FFNN, RBFNN, levenberg_marquardt
 
-FPS = 3000000
+FPS: int = 1000000
 TIMESTEP = 0.1
 DISPLAY = True
 
 class Acc1D(ADHDPState):
     @classmethod
-    def _dynamics(cls, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+    def _dynamics(cls, s: np.ndarray, u: np.ndarray) -> np.ndarray:
         ''' Also integrates dxdu '''
         force_multiplier = 10
 
-        p, p_dot, dp_du, dpdot_du = x
+        p, p_dot, dp_du, dpdot_du = s
         F = u[0] * force_multiplier
 
         p_ddot = F
@@ -35,10 +35,10 @@ class Acc1D(ADHDPState):
             next_states[i] = rk4(self._dynamics, init_states[i], u[i], dt)
         return Acc1D(next_states)
 
-    def get_x(self) -> np.ndarray:
+    def get_s(self) -> np.ndarray:
         return self.internal_state[:,:2]
 
-    def get_dxdu(self) -> np.ndarray:
+    def get_dsdu(self) -> np.ndarray:
         return self.internal_state[:,2:].reshape(-1, 2, 1)
 
     def get_reward(self, adhdp: ADHDP) -> np.ndarray:
@@ -51,22 +51,22 @@ class Acc1D(ADHDPState):
 
 class Acc2D(ADHDPState):
     @classmethod
-    def _dynamics(cls, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+    def _dynamics(cls, s: np.ndarray, u: np.ndarray) -> np.ndarray:
         ''' Also integrates dxdu '''
         force_multiplier = 10
 
-        x_, x_dot, y, y_dot = x[:4]
+        x, x_dot, y, y_dot = s[:4]
         F = force_multiplier * u
 
-        prev_dxdt_du = x[4:].reshape(4, 2)
-        dxdt_du = np.zeros((4, 2))
-        dxdt_du[0] = prev_dxdt_du[1]
-        dxdt_du[1,0] = force_multiplier
-        dxdt_du[2] = prev_dxdt_du[3]
-        dxdt_du[3,1] = force_multiplier
-        dxdt = np.array([x_dot, F[0], y_dot, F[1]])
+        prev_dsdt_du = s[4:].reshape(4, 2)
+        dsdt_du = np.zeros((4, 2))
+        dsdt_du[0] = prev_dsdt_du[1]
+        dsdt_du[1,0] = force_multiplier
+        dsdt_du[2] = prev_dsdt_du[3]
+        dsdt_du[3,1] = force_multiplier
+        dsdt = np.array([x_dot, F[0], y_dot, F[1]])
 
-        return np.concatenate((dxdt, dxdt_du.flatten()))
+        return np.concatenate((dsdt, dsdt_du.flatten()))
 
     def step_forward(self, u: np.ndarray, dt: float) -> Acc2D:
         next_states = np.zeros(self.internal_state.shape)
@@ -76,14 +76,14 @@ class Acc2D(ADHDPState):
             next_states[i] = rk4(self._dynamics, init_states[i], u[i], dt)
         return Acc2D(next_states)
 
-    def get_x(self) -> np.ndarray:
+    def get_s(self) -> np.ndarray:
         return self.internal_state[:,:4]
 
-    def get_dxdu(self) -> np.ndarray:
+    def get_dsdu(self) -> np.ndarray:
         return self.internal_state[:,4:].reshape(-1, 4, 2)
 
     def get_reward(self, adhdp: ADHDP) -> np.ndarray:
-        return np.linalg.norm(self.get_x(), axis=1) * (1 - adhdp.gamma)
+        return np.linalg.norm(self.get_s(), axis=1) * (1 - adhdp.gamma)
 
 
 def visualize_state(states: ADHDPState, adhdp: ADHDP) -> None:
@@ -94,8 +94,8 @@ def visualize_state(states: ADHDPState, adhdp: ADHDP) -> None:
 
     rl.begin_drawing()
     rl.clear_background(BG)
-    for xx in states.get_x():
-        p, p_dot = xx
+    for ss in states.get_s():
+        p, p_dot = ss
         rl.draw_circle(mid_x + int(p * 300), mid_y, 30, FG)
         rl.draw_circle(mid_x, mid_y, 10, HIGHLIGHT)
         rl.draw_line(mid_x + int(p * 300), mid_y,
@@ -110,7 +110,7 @@ def visualize_state(states: ADHDPState, adhdp: ADHDP) -> None:
     rl.end_drawing()
 
 
-def visualize_state2d(states: ADHDPState, adhdp: ADHDP) -> None:
+def visualize_state_2d(states: ADHDPState, adhdp: ADHDP) -> None:
     W, H = rl.get_screen_width(), rl.get_screen_height()
 
     mid_x = int(W*0.5)
@@ -120,13 +120,13 @@ def visualize_state2d(states: ADHDPState, adhdp: ADHDP) -> None:
     rl.clear_background(BG)
 
     J = np.zeros(len(states))
-    for i, xx in enumerate(states.get_x()):
-        x, x_dot, y, y_dot = xx
+    for i, ss in enumerate(states.get_s()):
+        x, x_dot, y, y_dot = ss
         rl.draw_circle(mid_x + int(x * 300), mid_y + int(y * 300), 30, FG)
         rl.draw_line(  mid_x + int(x * 300), mid_y + int(y * 300),
                        mid_x + int((x + x_dot) * 300), mid_y + int((y + y_dot) * 300), 
                        HIGHLIGHT)
-        J[i] = adhdp.critic.eval(np.concatenate((xx, adhdp.actor.eval(xx))))
+        J[i] = adhdp.critic.eval(np.concatenate((ss, adhdp.actor.eval(ss))))
 
     reward = np.average(states.get_reward(adhdp))
     rl.draw_text(f"J = {np.average(J)}", 10, 10, 16, HIGHLIGHT)
@@ -163,24 +163,31 @@ def acceleration_test():
         Layer.linear(1),
     ], (-c_w, c_w), (-c_w, c_w))
     
+    plant = FFNN([
+        Layer.linear(input_dim + output_dim),
+        Layer.tanh(5),
+        Layer.tanh(5),
+        Layer.linear(input_dim),
+    ], (-c_w, c_w), (-c_w, c_w))
+    
     #critic = RBFNN.grid_spaced(output_dim,
     #    np.linspace(-0.7, 0.7, 5), 
     #    np.linspace(-0.7, 0.7, 5), 
     #    np.linspace(-0.7, 0.7, 5))
     
     #prep_critic(critic)
-    #critic.save_weights_to("saved_networks/acc1d/critic5x5tanh_prep.dat")
-    #critic.save_weights_to("saved_networks/acc1d/critic15tanh_prep.dat")
-    #critic.load_weights_from("saved_networks/acc1d/critic15tanh_prep.dat")
-    #critic.load_weights_from("saved_networks/acc1d/critic5x5tanh_prep.dat")
+    #critic.save_weights_to("acc1d/critic5x5tanh_prep.dat")
+    #critic.save_weights_to("acc1d/critic15tanh_prep.dat")
+    #critic.load_weights_from("acc1d/critic15tanh_prep.dat")
+    #critic.load_weights_from("acc1d/critic5x5tanh_prep.dat")
 
-    #critic.load_weights_from("saved_networks/acc1d/critic_trained_p5.dat")
-    #actor.load_weights_from("saved_networks/acc1d/actor_trained_p5.dat")
+    #critic.load_weights_from("acc1d/critic_trained_p5.dat")
+    #actor.load_weights_from("acc1d/actor_trained_p5.dat")
 
-    critic.load_weights_from("saved_networks/acc1d/critic_trained_p99.dat")
-    #actor.load_weights_from("saved_networks/acc1d/actor_trained_p99.dat")
+    critic.load_weights_from("acc1d/critic_trained_p99.dat")
+    #actor.load_weights_from("acc1d/actor_trained_p99.dat")
 
-    adhdp = ADHDP(actor, critic, population)
+    adhdp = ADHDP(actor, critic, plant, population)
 
     if DISPLAY:
         rl.set_target_fps(FPS)
@@ -188,11 +195,12 @@ def acceleration_test():
         rl.init_window(800, 700, "Pendulum")
 
     adhdp.gamma = .99
-    adhdp.train_critic = False
-    adhdp.train_actor = True
+    adhdp.train_critic = True
+    adhdp.train_actor = False
+    adhdp.use_actor = True
 
     window_closed = False
-    error_evolution = np.zeros((epochs, 2))
+    error_evolution = np.zeros((epochs, 3))
     for epoch in range(epochs):
         state_init = np.zeros((population, 4))
         state_init[:,0] = np.random.uniform(-1, 1, population)
@@ -204,7 +212,6 @@ def acceleration_test():
 
         time = 0
         error_evolution_run = []
-        adhdp.reinitialize(state)
 
         while True:
             dt = TIMESTEP
@@ -227,15 +234,15 @@ def acceleration_test():
         if window_closed:
             break
 
-        error_evolution[epoch] = np.average(np.array(error_evolution_run), axis=0)
+        error_evolution[epoch] = np.average(np.average(np.array(error_evolution_run), axis=2), axis=0)
         print(epoch, error_evolution[epoch])
     
     if DISPLAY:
         rl.close_window()
 
 
-    #critic.save_weights_to("saved_networks/acc1d/critic_trained_p99.dat")
-    #actor.save_weights_to("saved_networks/acc1d/actor_trained_p99.dat")
+    #critic.save_weights_to("acc1d/critic_trained_p99.dat")
+    #actor.save_weights_to("acc1d/actor_trained_p99.dat")
 
     adhdp.plot_actor_critic()
 
@@ -256,7 +263,7 @@ def acceleration_test_2d():
         Layer.tanh(2),
         Layer.linear(1),
     ], (-1, 1), (-1, 1))
-    actor_1d.load_weights_from("saved_networks/acc1d/actor_trained_p99.dat")
+    actor_1d.load_weights_from("acc1d/actor_trained_p99.dat")
 
     c_w = 1
     critic_1d = FFNN([
@@ -265,7 +272,7 @@ def acceleration_test_2d():
         Layer.tanh(5),
         Layer.linear(1),
     ], (-c_w, c_w), (-c_w, c_w))
-    critic_1d.load_weights_from("saved_networks/acc1d/critic_trained_p99.dat")
+    critic_1d.load_weights_from("acc1d/critic_trained_p99.dat")
 
     actor = FFNN.stack(actor_1d, actor_1d)
     critic = FFNN.stack(critic_1d, critic_1d)
@@ -287,10 +294,10 @@ def acceleration_test_2d():
         Layer.sigmoid(10),
         Layer.linear(4),
     ], (-100, 100), (-100, 100))
-    plant.load_weights_from("saved_networks/acc2d/plant_trained_p99.dat")
+    plant.load_weights_from("acc2d/plant_trained_p99.dat")
 
-    #critic.load_weights_from("saved_networks/acc2d/critic_trained_p99.dat")
-    #actor.load_weights_from("saved_networks/acc2d/actor_trained_p99.dat")
+    critic.load_weights_from("acc2d/critic_trained_p99.dat")
+    actor.load_weights_from("acc2d/actor_trained_p99.dat")
 
     adhdp = ADHDP(actor, critic, plant, population)
 
@@ -302,8 +309,9 @@ def acceleration_test_2d():
     adhdp.gamma = .99
     adhdp.train_critic = True
     adhdp.train_actor = True
-    adhdp.train_plant = True
+    adhdp.train_plant = False
     adhdp.use_plant = False
+    adhdp.use_actor = True
     #adhdp.plant_learning_rate = 1e-3
 
     window_closed = False
@@ -321,7 +329,6 @@ def acceleration_test_2d():
 
         time = 0
         error_evolution_run = []
-        adhdp.reinitialize(state)
 
         while True:
             dt = TIMESTEP
@@ -336,7 +343,7 @@ def acceleration_test_2d():
 
             # Visualization
             if DISPLAY:
-                visualize_state2d(state, adhdp)
+                visualize_state_2d(state, adhdp)
                 if rl.window_should_close():
                     window_closed = True
                     break
@@ -353,9 +360,9 @@ def acceleration_test_2d():
     if DISPLAY:
         rl.close_window()
 
-    #critic.save_weights_to("saved_networks/acc2d/critic_trained_p99.dat")
-    #actor.save_weights_to("saved_networks/acc2d/actor_trained_p99.dat")
-    #plant.save_weights_to("saved_networks/acc2d/plant_trained_p99.dat")
+    #critic.save_weights_to("acc2d/critic_trained_p99.dat")
+    #actor.save_weights_to("acc2d/actor_trained_p99.dat")
+    #plant.save_weights_to("acc2d/plant_trained_p99.dat")
     plant.show_weights()
 
     fig, ax = plt.subplots(1, 1)
