@@ -2,217 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pyray as rl
 
+from track_states import TrackStateRot, gen_state
 from networks import Network, FFNN, RBFNN, Layer, check_io_gradients
 from adhdp import ADHDP, ADHDPState
 from track import Track, TrackSegmentArc
 from common import *
 
-from typing import Callable, Self
-from math import exp, floor
-
-MAX_VEL = 1e20
-VEL_SCALE = 100
-
-FORCE = 100
-DELTA_TIME = 0.05
-
-def transform2d(inp: np.ndarray, R: np.ndarray) -> np.ndarray:
-    out = np.zeros(inp.shape)
-    out[:,0] = R[:,0,0]*inp[:,0] + R[:,0,1]*inp[:,1]
-    out[:,1] = R[:,1,0]*inp[:,0] + R[:,1,1]*inp[:,1]
-    return out
-
-
-def get_dcartds(track: Track, internal_state: np.ndarray) -> np.ndarray:
-    ''' Returns the derivative of track coordinates w.r.t cartesian coordinates '''
-    dcartds = np.zeros((len(internal_state), 2, 2))
-    segment_indices = (np.floor(internal_state[:,4]) % len(track.segments)).astype(np.int32)
-    track_length = sum([x.length for x in track.segments]) 
-
-    for i, seg in enumerate(track.segments):
-        segment_filter = segment_indices == i
-        s = seg.get_track_coordinates(internal_state[segment_filter,:2])
-        tangents = seg.get_tangent_at(internal_state[segment_filter,:2])
-        seg_length_mid = seg.length
-        track_width_half = track.track_width/2
-
-        if isinstance(seg, TrackSegmentArc):
-            # adjust for turning radius
-            delta_a = seg._a2 - seg._a1
-            seg_lengths = seg_length_mid + s[:,1] * delta_a
-            seg_lengths = seg_lengths[:,np.newaxis]
-        else:
-            seg_lengths = seg_length_mid
-
-        fract = seg_length_mid / track_length
-        dcartds[segment_filter,:,0] = tangents * seg_lengths / fract / 2
-        dcartds[segment_filter,:,1] = tangents[:,[1,0]] * np.array([[1,-1]]) * track_width_half
-        
-    return dcartds
-
-class TrackStateDirect(ADHDPState):
-    def __init__(self, p_track: Track, p_internal_state: np.ndarray):
-        super().__init__(p_internal_state)
-        self.track = p_track
-        self.collision_mask = self.internal_state[:,0] != self.internal_state[:,0]
-        self.win_mask = self.internal_state[:,0] != self.internal_state[:,0]
-    
-    def get_initial_control(self) -> np.ndarray:
-        tangent = self.track.get_path_dir(self.internal_state)
-        return tangent
-
-    def step_forward(self, u: np.ndarray, dt: float) -> Self:
-        #u = np.random.normal(0, 0.1, u.shape)
-        next_states = np.zeros(self.internal_state.shape)
-        next_states[:,:2] = self.internal_state[:,:2] + u*FORCE * dt
-        next_states[:,2:4] = u*FORCE
-        next_states[:,4] = self.internal_state[:,4]
-
-        # Update track distance
-        along_tracks, across_tracks = self.track.get_track_coordinates(next_states, False).T
-        for i in range(len(self.internal_state)):
-            segment_index = int(floor(self.internal_state[i, 4] % len(self.track.segments)))
-            lap_index = int(floor(self.internal_state[i, 4]) // len(self.track.segments))
-            next_states[i,4] = lap_index * len(self.track.segments) + segment_index +\
-                               along_tracks[i] / self.track.segments[segment_index].length
-            
-        # Check collisions
-        collisions = self.track.check_collisions(self.internal_state[:,:5], u, next_states[:,:2] - self.internal_state[:,:2])
-        collision_mask = np.logical_not(np.isinf(collisions[:,0]))
-        win_mask = self.internal_state[:,4] > 3.9
-        next_states[collision_mask,:2] = collisions[collision_mask,:2]
-        next_states[collision_mask,2:4] = 0
-
-        # reset next to start (so masks can be used in reward function w/o delay)
-        next_states[self.collision_mask] = gen_state(self.track, np.count_nonzero(self.collision_mask), True)
-        next_states[self.win_mask] = gen_state(self.track, np.count_nonzero(self.win_mask), True)
-
-        # limits
-        next_states[:,2:4] = np.maximum(np.minimum(next_states[:,2:4], MAX_VEL), -MAX_VEL)
-
-        res = TrackStateDirect(self.track, next_states)
-        res.collision_mask = collision_mask
-        res.win_mask = win_mask
-        return res
-
-    def get_s(self) -> np.ndarray:
-        s = np.zeros((len(self), 2))
-        tc = self.track.get_track_coordinates(self.internal_state, True)
-        track_length = sum([x.length for x in self.track.segments])
-        s[:,0] = tc[:,0] / track_length * 2.0 - 1.0
-        s[:,1] = tc[:,1] * 2 / self.track.track_width
-        #s[:,1] *= self.track.track_width /  track_length
-        return s
-
-    def get_dsdu(self, dt: float) -> np.ndarray:
-        dcartdu = np.eye(2) * FORCE * dt
-
-        dcartds = get_dcartds(self.track, self.internal_state)
-
-        dsdu = np.zeros((len(self), 2, 2))
-        for i in range(len(self)):
-            dsdu[i] = np.linalg.solve(dcartds[i], dcartdu)
-        
-        dsdu *= (1 - self.collision_mask.astype(float)[:,np.newaxis,np.newaxis])
-        return dsdu
-
-    def get_reward(self, adhdp: ADHDP) -> np.ndarray:
-        along_tracks, across_tracks = self.track.get_track_coordinates(self.internal_state).T
-        center_distance = 2*np.abs(across_tracks) / self.track.track_width
-        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / VEL_SCALE
-        progress = 1 - (self.internal_state[:,4] - 1) / len(self.track.segments)
-        #return 0.01 - self.win_mask.astype(float) + self.collision_mask.astype(float)
-        return (progress
-            ) * (1 - adhdp.gamma) - self.win_mask.astype(float) + self.collision_mask.astype(float)
-    
-    def get_positions(self) -> np.ndarray:
-        return self.internal_state[:,:5]
-
-
-class TrackState(ADHDPState):
-    def __init__(self, p_track: Track, p_internal_state: np.ndarray):
-        super().__init__(p_internal_state)
-        self.track = p_track
-        self.collision_mask = self.internal_state[:,0] != self.internal_state[:,0]
-        self.win_mask = self.internal_state[:,0] != self.internal_state[:,0]
-    
-    def get_initial_control(self) -> np.ndarray:
-        tangent = self.track.get_path_dir(self.internal_state)
-        along, across = self.track.get_track_coordinates(self.internal_state, True).T
-        radial = tangent[:,[1,0]] * np.array([[1,-1]])
-        wall_avoidance = radial * across[:,np.newaxis] * -0.1 / self.track.track_width
-        vel_part = self.internal_state[:,2:4] * 0.01
-        return wall_avoidance - vel_part + tangent * 0.2
-
-    def step_forward(self, u: np.ndarray, dt: float) -> Self:
-        #u = np.random.normal(0, 0.1, u.shape)
-        next_states = np.zeros(self.internal_state.shape)
-        next_states[:,:2] = self.internal_state[:,:2] + .5 * u*FORCE * dt*dt + self.internal_state[:,2:4] * dt
-        next_states[:,2:4] = self.internal_state[:,2:4] + u*FORCE * dt
-        next_states[:,4] = self.internal_state[:,4]
-
-        # Update track distance
-        along_tracks, across_tracks = self.track.get_track_coordinates(next_states, False).T
-        for i in range(len(self.internal_state)):
-            segment_index = int(floor(self.internal_state[i, 4] % len(self.track.segments)))
-            lap_index = int(floor(self.internal_state[i, 4]) // len(self.track.segments))
-            next_states[i,4] = lap_index * len(self.track.segments) + segment_index +\
-                               along_tracks[i] / self.track.segments[segment_index].length
-            
-        # Check collisions
-        collisions = self.track.check_collisions(self.internal_state[:,:5], u, next_states[:,:2] - self.internal_state[:,:2])
-        collision_mask = np.logical_not(np.isinf(collisions[:,0]))
-        win_mask = self.internal_state[:,4] > 2
-        next_states[collision_mask,:2] = collisions[collision_mask,:2]
-        next_states[collision_mask,2:4] = 0
-
-        # reset next to start (so masks can be used in reward function w/o delay)
-        next_states[self.collision_mask] = gen_state(self.track, np.count_nonzero(self.collision_mask), True)
-        next_states[self.win_mask] = gen_state(self.track, np.count_nonzero(self.win_mask), True)
-
-        # limits
-        next_states[:,2:4] = np.maximum(np.minimum(next_states[:,2:4], MAX_VEL), -MAX_VEL)
-
-        res = TrackState(self.track, next_states)
-        res.collision_mask = collision_mask
-        res.win_mask = win_mask
-        return res
-
-    def get_s(self) -> np.ndarray:
-        s = np.zeros((len(self), 4))
-        #s = np.zeros((len(self), 2))
-        tc = self.track.get_track_coordinates(self.internal_state, True)
-        track_length = sum([x.length for x in self.track.segments])
-        s[:,0] = np.pi * tc[:,0] / track_length * 2.0 - 1.0
-        s[:,1] = tc[:,1] * 2 / self.track.track_width
-        s[:,2:4] = self.internal_state[:,2:4] / VEL_SCALE
-        return s
-
-    def get_dsdu(self, dt: float) -> np.ndarray:
-        dcartdu = np.eye(2) * FORCE * dt*dt*0.5
-
-        dcartds = get_dcartds(self.track, self.internal_state)
-        dcartds[:,:,0] *= 1/np.pi  # Determined empirically
-
-        dsdu = np.zeros((len(self), 4, 2))
-        for i in range(len(self)):
-            dsdu[i,:2] = np.linalg.solve(dcartds[i], dcartdu)
-            dsdu[i,2:] = np.eye(2) * FORCE / VEL_SCALE
-        
-        dsdu *= (1 - self.collision_mask.astype(float)[:,np.newaxis,np.newaxis])
-        return dsdu
-
-    def get_reward(self, adhdp: ADHDP) -> np.ndarray:
-        along_tracks, across_tracks = self.track.get_track_coordinates(self.internal_state).T
-        center_distance = 2*np.abs(across_tracks) / self.track.track_width
-        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / VEL_SCALE
-        progress = 1 - (self.internal_state[:,4] / len(self.track.segments) - 1)
-        return (progress
-            ) * (1 - adhdp.gamma) - self.win_mask.astype(float) + self.collision_mask.astype(float)
-    
-    def get_positions(self) -> np.ndarray:
-        return self.internal_state[:,:5]
-
+from math import exp
 
 def get_player_input() -> np.ndarray:
     player_input = np.zeros(2)
@@ -237,26 +33,6 @@ def update_camera(camera: rl.Camera2D) -> None:
     camera.zoom *= exp(rl.get_mouse_wheel_move() * 0.1)
 
 
-def gen_state(track: Track, count: int, concentrated: bool) -> np.ndarray:
-    state_init = np.zeros((count, 5))
-    spawns = np.random.choice(len(track.segments), count) + np.random.uniform(0, 1, count)
-    if concentrated:
-        spawns = spawns*0 + 1
-
-    scatter_radius = track.track_width / np.sqrt(8)
-    state_init[:,:2] = track.evaluate_path(spawns)
-    state_init[:,1] += np.random.uniform(-scatter_radius, scatter_radius, state_init[:,1].shape)
-    state_init[:,2:4] = np.random.uniform(-1, 1, (count, 2)) * 10
-    state_init[:,4] = spawns
-    return state_init
-
-
-def training_loop(track: Track, adhdp: ADHDP) -> None:
-    states = TrackState(track, gen_state(track, 20, False))
-    for _ in range(300):
-        states = adhdp.step_and_learn(states, 0.1)
-
-
 def visualize(track: Track, adhdp: ADHDP, population: int):
     # Raylib initialisation
     rl.set_config_flags(0
@@ -268,18 +44,13 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
     camera = rl.Camera2D(rl.Vector2(500, 300), rl.Vector2(0, 0), 0, 1)
     paused = True
 
-    # Generate states
-
-    states = TrackState(track, gen_state(track, population, True))
-    time = 0
-
     fig, ax = plt.subplots()
-
     learning = []
 
     outer_loop = True
     while outer_loop:
-        states = TrackState(track, gen_state(track, population, True))
+        # Generate states
+        states = TrackStateRot(track, gen_state(track, population, True))
         time = 0
         while True:
             dt = DELTA_TIME
@@ -293,7 +64,7 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
 
                 time += dt
 
-                states: TrackState = adhdp.step_and_learn(states, dt)
+                states: TrackStateRot = adhdp.step_and_learn(states, dt)
             
                 if np.average(states.get_reward(adhdp)) > 100:
                     break
@@ -328,9 +99,9 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
             if rl.is_key_pressed(rl.KeyboardKey.KEY_SPACE) or rl.is_gamepad_button_pressed(0, 0):
                 paused = not paused
             if rl.is_key_pressed(rl.KeyboardKey.KEY_S):
-                adhdp.actor.save_weights_to("norays/actor.dat")
-                adhdp.critic.save_weights_to("norays/critic.dat")
-                #adhdp.plant.save_weights_to("norays/plant.dat")
+                adhdp.actor.save_weights_to("norays_rot/actor_prepped.dat")
+                adhdp.critic.save_weights_to("norays_rot/critic_rbf.dat")
+                #adhdp.plant.save_weights_to("norays_vel/plant.dat")
                 pass
 
             if rl.is_key_pressed(rl.KeyboardKey.KEY_R):
@@ -362,11 +133,9 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
 
 def generate_networks() -> tuple[Network, Network, Network]:
     
-    actor = RBFNN.grid_spaced(2, 
-        np.linspace(-1, 1, 10), 
-        np.linspace(-1, 1, 4),
-        np.linspace(-1, 1, 4),
-        np.linspace(-1, 1, 4))
+    actor = RBFNN.grid_spaced(1,
+        np.linspace(-1, 1, 30), 
+        np.linspace(-1, 1, 5))
 
     #actor = FFNN([
     #    Layer.linear(2),
@@ -375,27 +144,26 @@ def generate_networks() -> tuple[Network, Network, Network]:
     #], (-1, 1), (-1, 1))
 
     #critic = RBFNN.grid_spaced(1, 
-    #    np.linspace(-1, 1, 5), 
+    #    np.linspace(-1, 1, 6), 
     #    np.linspace(-1, 1, 4), 
-    #    np.linspace(-1, 1, 3), 
-    #    np.linspace(-1, 1, 3))
+    #    np.linspace(-1, 1, 5))
 
     critic = FFNN([
-        Layer.linear(6),
+        Layer.linear(3),
         Layer.tanh(10),
         Layer.tanh(10),
         Layer.linear(1),
     ], (-1, 1), (-1, 1))
 
     plant = FFNN([
-        Layer.linear(4),
-        Layer.tanh(20),
-        Layer.tanh(20),
+        Layer.linear(3),
+        Layer.tanh(10),
+        Layer.tanh(10),
         Layer.linear(2),
     ])
 
-    actor.load_weights_from("norays/actor_prepped.dat")
-    critic.load_weights_from("norays/critic.dat")
+    actor.load_weights_from("norays_rot/actor_prepped.dat")
+    critic.load_weights_from("norays_rot/critic.dat")
     #plant.load_weights_from("norays_vel/plant.dat")
 
     return actor, critic, plant
@@ -408,17 +176,17 @@ def main():
     track = Track("editing/track1.txt")
     
     adhdp = ADHDP(*generate_networks(), population)
-    adhdp.u_offsets = np.random.normal(0, 0.2, (population, 2))
+    adhdp.u_offsets = np.random.normal(0, 0.0, (population, 1))
     adhdp.gamma = 0.99
 
-    adhdp.train_actor = True
+    adhdp.train_actor = False
     adhdp.train_critic = True
     adhdp.train_plant = False
-    adhdp.train_actor_on_initial = False
+    adhdp.train_actor_on_initial = True
 
     adhdp.use_plant = False
-    adhdp.use_actor = True 
-    adhdp.actor_learning_rate = 1e-3
+    adhdp.use_actor = True
+    adhdp.actor_learning_rate = 1e-2
     adhdp.critic_learning_rate = 1e-2
     adhdp.plant_learning_rate = 1e-3
     #check_io_gradients(adhdp.critic)

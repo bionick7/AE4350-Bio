@@ -21,7 +21,7 @@ class ADHDPState:
     def get_s(self) -> np.ndarray:
         return self.internal_state
 
-    def get_dsdu(self, dt: float) -> np.ndarray:
+    def get_dsdu(self, dt: float, u: np.ndarray) -> np.ndarray:
         return np.zeros(len(self.internal_state))
     
     def check_dsdu(self):
@@ -80,9 +80,9 @@ class ADHDP:
 
     def step_and_learn(self, states: ADHDPState, dt: float) -> ADHDPState:
         actor_inputs = states.get_s()
-        dsdu = states.get_dsdu(dt)
-
         u = np.zeros((len(states), self.u_size))
+        dsdu = states.get_dsdu(dt, u)
+
         #grad_actor = np.zeros((len(states), self.u_size, len(self.actor.weights)))
         
         if self.use_actor:
@@ -97,8 +97,8 @@ class ADHDP:
 
         next_states = states.step_forward(u, dt)
         next_actor_inputs = next_states.get_s()
-        next_dsdu = next_states.get_dsdu(dt)
-        rewards = next_states.get_reward(self)
+        next_dsdu = next_states.get_dsdu(dt, u)
+        rewards = states.get_reward(self)
 
         if self.train_actor_on_initial:
             u_expected = next_states.get_initial_control()
@@ -110,7 +110,7 @@ class ADHDP:
 
             if self.train_plant:
                 _, E_p = self.plant.learn_gd(self.plant_learning_rate, critic_input, next_actor_inputs[i] - actor_inputs[i])
-                #_, E_p = self.plant.learn_ml(0.001, critic_input, next_actor_inputs[i] - actor_inputs[i])
+                #_, E_p = self.plant.learn_ml(0.1, critic_input, next_actor_inputs[i] - actor_inputs[i])
             else:
                 #plant_out = self.plant.eval(critic_input)
                 #target = next_actor_inputs[i] - actor_inputs[i]
@@ -120,8 +120,8 @@ class ADHDP:
 
             #     J(t+1) = gamma * J(t) + r(t+1)
             #     J(t) += r(t+1) + gamma * J(t+1) - J(t)
-            J_t1 = self.critic.eval(next_critic_input)[0]
-            critic_expected = self.gamma * J_t1 + reward  # previous input
+            J_next = self.critic.eval(next_critic_input)[0]
+            critic_expected = self.gamma * J_next + reward  # previous input
             #critic_expected = (J_t1 - reward) / self.gamma  # previous input
             if self.train_critic:
                 J_t, E_c = self.critic.learn_gd(self.critic_learning_rate, critic_input, critic_expected)
@@ -135,26 +135,26 @@ class ADHDP:
             
             if self.train_actor:
                 #J = rewards[i]
-                e_a = np.array([[J_t1 - J_tgt]])
+                e_a = np.array([[J_next - J_tgt]])
                 u_next, grad_actor = self.actor.get_weight_gradient(actor_inputs[i])
 
                 # update actor weights
-                dJds = self.critic.get_io_gradient(critic_input)[:,:self.s_size]
                 dJdu = self.critic.get_io_gradient(critic_input)[:,self.s_size:]
+                dJds = self.critic.get_io_gradient(next_critic_input)[:,:self.s_size]
                 if self.use_plant:
                     dsdu_ = self.plant.get_io_gradient(critic_input)[:,self.s_size:]
                 else:
                     dsdu_ = dsdu[i].reshape(self.s_size, self.u_size)
 
-                #true_grad_actor = (dJdu + dJds @ dsdu_) @ grad_actor
-                #true_grad_actor = dJdu @ grad_actor
-                true_grad_actor = dJds @ dsdu_ @ grad_actor
+                grad_actor_now = dJdu @ grad_actor
+                grad_actor_next = dJds @ dsdu_ @ grad_actor
+                true_grad_actor = grad_actor_now + grad_actor_next
 
                 actor_weight_delta = true_grad_actor.flatten() * -self.actor_learning_rate
                 #actor_weight_delta = (true_grad_actor.T @ e_a).flatten() * self.actor_learning_rate
                 #actor_weight_delta = levenberg_marquardt(true_grad_actor, e_a, 0.01)
                 self.actor.update_weights(actor_weight_delta)
-                E_a: float = J_t1
+                E_a: float = J_next
             
             elif self.train_actor_on_initial:
                 _, E_a = self.actor.learn_gd(self.actor_learning_rate, next_actor_inputs[i], u_expected[i])
@@ -201,8 +201,10 @@ class ADHDP:
         fig.tight_layout()
 
     def plot_critic_gradient(self, s_axis1: int=0, s_axis2: int=1, 
-                             u_axis1: int=0, u_axis2: int=1):
+                             u_axis1: int=0, u_axis2: int=1, u_axis3: int=2):
         
+        shown_u_size = min(self.u_size, 3)
+
         fig = plt.figure(figsize=(9, 4))
         ax1 = fig.subplots(1, 1)
         xx, yy = np.meshgrid(np.linspace(-1, 1, 100), np.linspace(-1, 1, 100))
@@ -216,7 +218,10 @@ class ADHDP:
                 act_outp = self.actor.eval(actor_input)
                 gradients = self.critic.get_io_gradient(np.concatenate((actor_input, act_outp)))[0,:]
                 critic_gradient[i, j, 0] = gradients[self.s_size + u_axis1]*.5+.5
-                critic_gradient[i, j, 1] = gradients[self.s_size + u_axis2]*.5+.5
+                if shown_u_size > 1:
+                    critic_gradient[i, j, 1] = gradients[self.s_size + u_axis2]*.5+.5
+                if shown_u_size > 2:
+                    critic_gradient[i, j, 2] = gradients[self.s_size + u_axis3]*.5+.5
 
         ax1.imshow(critic_gradient)
         fig.tight_layout()

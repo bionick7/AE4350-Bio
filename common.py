@@ -3,6 +3,14 @@ from typing import Callable
 import pyray as rl
 
 
+MAX_VEL = 1e20
+VEL_SCALE = 100
+
+FORCE = 100
+DELTA_TIME = 0.05
+
+
+
 def color_from_html(html: int) -> rl.Color:
     return rl.Color((html >> 16) & 0xFF, (html >> 8) & 0xFF, html & 0xFF, 0xFF)
 

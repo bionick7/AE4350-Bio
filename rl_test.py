@@ -9,81 +9,78 @@ from common import *
 from adhdp import ADHDP, ADHDPState
 from networks import Network, Layer, FFNN, RBFNN, levenberg_marquardt
 
-FPS: int = 1000000
+FPS: int = 100000000
 TIMESTEP = 0.1
 DISPLAY = True
 
 class Acc1D(ADHDPState):
+    force_multiplier = 10
+
     @classmethod
     def _dynamics(cls, s: np.ndarray, u: np.ndarray) -> np.ndarray:
         ''' Also integrates dxdu '''
-        force_multiplier = 10
 
-        p, p_dot, dp_du, dpdot_du = s
-        F = u[0] * force_multiplier
+        p, p_dot = s
+        F = u[0] * cls.force_multiplier
 
         p_ddot = F
-        dpddot_du = force_multiplier
 
-        return np.array([p_dot, p_ddot, dpdot_du, dpddot_du])
+        return np.array([p_dot, p_ddot])
 
     def step_forward(self, u: np.ndarray, dt: float) -> Acc1D:
         next_states = np.zeros(self.internal_state.shape)
         init_states = np.zeros(self.internal_state.shape)
-        init_states[:2] = self.internal_state[:2]
+        init_states[:,:2] = self.internal_state[:,:2]
         for i in range(len(self.internal_state)):
             next_states[i] = rk4(self._dynamics, init_states[i], u[i], dt)
         return Acc1D(next_states)
 
     def get_s(self) -> np.ndarray:
-        return self.internal_state[:,:2]
+        return self.internal_state
 
-    def get_dsdu(self) -> np.ndarray:
-        return self.internal_state[:,2:].reshape(-1, 2, 1)
+    def get_dsdu(self, dt: float, u: np.ndarray) -> np.ndarray:
+        dsdu_single = np.array([[self.force_multiplier*dt*dt*0.5], [self.force_multiplier*dt]])
+        return np.repeat(dsdu_single[np.newaxis,:], len(self), axis=0)
 
     def get_reward(self, adhdp: ADHDP) -> np.ndarray:
         p, p_dot, *_ = self.internal_state.T
-        return np.sqrt(p*p + p_dot*p_dot) * (1 - adhdp.gamma)
+        return (p*p + p_dot*p_dot) ** 0.1 * (1 - adhdp.gamma)
 
     def __copy__(self) -> ADHDPState:
         return ADHDPState(self.internal_state.copy())
 
 
 class Acc2D(ADHDPState):
-    @classmethod
-    def _dynamics(cls, s: np.ndarray, u: np.ndarray) -> np.ndarray:
-        ''' Also integrates dxdu '''
-        force_multiplier = 10
-
-        x, x_dot, y, y_dot = s[:4]
-        F = force_multiplier * u
-
-        prev_dsdt_du = s[4:].reshape(4, 2)
-        dsdt_du = np.zeros((4, 2))
-        dsdt_du[0] = prev_dsdt_du[1]
-        dsdt_du[1,0] = force_multiplier
-        dsdt_du[2] = prev_dsdt_du[3]
-        dsdt_du[3,1] = force_multiplier
-        dsdt = np.array([x_dot, F[0], y_dot, F[1]])
-
-        return np.concatenate((dsdt, dsdt_du.flatten()))
+    force_multiplier = 10
 
     def step_forward(self, u: np.ndarray, dt: float) -> Acc2D:
         next_states = np.zeros(self.internal_state.shape)
-        init_states = np.zeros(self.internal_state.shape)
-        init_states[:4] = self.internal_state[:4]
-        for i in range(len(self.internal_state)):
-            next_states[i] = rk4(self._dynamics, init_states[i], u[i], dt)
+        dsdu = self.get_dsdu(dt, u)
+        for i in range(len(self)):
+            next_states[i] = self.internal_state[i] + dsdu[i] @ u[i]  # exact, since it's linear
+            next_states[i,:2] += self.internal_state[i,2:] * dt
         return Acc2D(next_states)
 
+    def get_initial_control(self) -> np.ndarray:
+        x, y, x_dot, y_dot = self.internal_state.T
+        u = np.zeros((len(self), 2))
+        u[:,0] = - x - x_dot
+        u[:,1] = - y - y_dot * .5
+        return u
+    
     def get_s(self) -> np.ndarray:
-        return self.internal_state[:,:4]
+        return self.internal_state
 
-    def get_dsdu(self) -> np.ndarray:
-        return self.internal_state[:,4:].reshape(-1, 4, 2)
+    def get_dsdu(self, dt: float, u: np.ndarray) -> np.ndarray:
+        single_dsdu = np.vstack((
+            np.eye(2) * dt*dt * .5,
+            np.eye(2) * dt,
+        )) * self.force_multiplier
+        return np.repeat(single_dsdu[np.newaxis,:], len(self), axis=0)
 
     def get_reward(self, adhdp: ADHDP) -> np.ndarray:
-        return np.linalg.norm(self.get_s(), axis=1) * (1 - adhdp.gamma)
+        x, y, x_dot, y_dot = self.get_s().T
+        return (x*x+y*y + x_dot*x_dot+y_dot*y_dot - 1) * (1 - adhdp.gamma)
 
 
 def visualize_state(states: ADHDPState, adhdp: ADHDP) -> None:
@@ -121,7 +118,7 @@ def visualize_state_2d(states: ADHDPState, adhdp: ADHDP) -> None:
 
     J = np.zeros(len(states))
     for i, ss in enumerate(states.get_s()):
-        x, x_dot, y, y_dot = ss
+        x, y, x_dot, y_dot = ss
         rl.draw_circle(mid_x + int(x * 300), mid_y + int(y * 300), 30, FG)
         rl.draw_line(  mid_x + int(x * 300), mid_y + int(y * 300),
                        mid_x + int((x + x_dot) * 300), mid_y + int((y + y_dot) * 300), 
@@ -152,7 +149,7 @@ def acceleration_test():
     actor.weights = np.array([
         1,0,0,
         0,1,0,
-        -0.5,-0.5,0  # Proportional gain, Derivative gain, bias
+        -0.1,-0.1,0  # Proportional gain, Derivative gain, bias
     ], float)
     
     c_w = 1
@@ -185,7 +182,8 @@ def acceleration_test():
     #actor.load_weights_from("acc1d/actor_trained_p5.dat")
 
     critic.load_weights_from("acc1d/critic_trained_p99.dat")
-    #actor.load_weights_from("acc1d/actor_trained_p99.dat")
+    critic.set_weight_matrix(0, critic.get_weight_matrix(0) + np.random.normal(0, 0.1))
+    actor.load_weights_from("acc1d/actor_trained_p99.dat")
 
     adhdp = ADHDP(actor, critic, plant, population)
 
@@ -196,15 +194,15 @@ def acceleration_test():
 
     adhdp.gamma = .99
     adhdp.train_critic = True
-    adhdp.train_actor = False
+    adhdp.train_actor = True
     adhdp.use_actor = True
+    adhdp.actor_learning_rate = 1e-3
+    adhdp.critic_learning_rate = 1e-2
 
     window_closed = False
     error_evolution = np.zeros((epochs, 3))
     for epoch in range(epochs):
-        state_init = np.zeros((population, 4))
-        state_init[:,0] = np.random.uniform(-1, 1, population)
-        state_init[:,1] = np.random.uniform(-1, 1, population)
+        state_init = np.random.uniform(-1, 1, (population, 2))
         state = Acc1D(state_init)
 
         if adhdp.gamma < 0.99:
@@ -214,11 +212,14 @@ def acceleration_test():
         error_evolution_run = []
 
         while True:
+            #adhdp.u_offsets = np.random.normal(0, 0.01, (population, 1))
+
             dt = TIMESTEP
 
             state = adhdp.step_and_learn(state, dt)
+            r = state.get_reward(adhdp)
 
-            if time > 10:
+            if np.average(r) < 0.001:
                 break
 
             # Visualization
@@ -245,6 +246,7 @@ def acceleration_test():
     #actor.save_weights_to("acc1d/actor_trained_p99.dat")
 
     adhdp.plot_actor_critic()
+    adhdp.plot_critic_gradient(0,1, 0,1)
 
     fig, ax = plt.subplots(1, 1)
     ax.plot(error_evolution[:,0], label='actor')
@@ -255,49 +257,32 @@ def acceleration_test():
 
 
 def acceleration_test_2d():
-    population = 10
-    epochs = 30
-
-    actor_1d = FFNN([
-        Layer.linear(2),
-        Layer.tanh(2),
-        Layer.linear(1),
-    ], (-1, 1), (-1, 1))
-    actor_1d.load_weights_from("acc1d/actor_trained_p99.dat")
-
-    c_w = 1
-    critic_1d = FFNN([
-        Layer.linear(3),
-        Layer.tanh(5),
-        Layer.tanh(5),
-        Layer.linear(1),
-    ], (-c_w, c_w), (-c_w, c_w))
-    critic_1d.load_weights_from("acc1d/critic_trained_p99.dat")
-
-    actor = FFNN.stack(actor_1d, actor_1d)
-    critic = FFNN.stack(critic_1d, critic_1d)
-    # Need to hack this open to fix the first and last layer
-    last_weights = critic.get_weight_matrix(2)
-    critic.architecture[-1].size = 1
-    critic.weights[critic.offsets[-1]:critic.offsets[-1]+11] = np.sum(last_weights, axis=0)
-    critic.weights = np.resize(critic.weights, critic.offsets[-1]+11)
-
-    mat = critic.get_weight_matrix(0)
-    u1_weights = mat[:,2]
-    mat[:,2] = mat[:,3]
-    mat[:,3] = mat[:,4]
-    mat[:,4] = u1_weights
-    critic.set_weight_matrix(0, mat)
-
-    plant = FFNN([
-        Layer.linear(6),
-        Layer.sigmoid(10),
+    population = 60
+    epochs = 20
+    
+    #actor = RBFNN.grid_spaced(2,
+    #    np.linspace(-1, 1, 4),
+    #    np.linspace(-1, 1, 4),
+    #    np.linspace(-1, 1, 4),
+    #    np.linspace(-1, 1, 4)
+    #)
+    actor = FFNN([
         Layer.linear(4),
-    ], (-100, 100), (-100, 100))
-    plant.load_weights_from("acc2d/plant_trained_p99.dat")
+        Layer.tanh(4),
+        Layer.tanh(2),
+    ])
 
-    critic.load_weights_from("acc2d/critic_trained_p99.dat")
-    actor.load_weights_from("acc2d/actor_trained_p99.dat")
+    #actor.set_weight_matrix(0, np.hstack((np.eye(4), np.zeros((4, 1)))))
+    #actor.set_weight_matrix(-1, np.hstack((-0.1 * np.eye(2), -0.1 * np.eye(2), np.zeros((2, 1)))))
+    
+    critic = FFNN([
+        Layer.linear(6),
+        Layer.tanh(20),
+        Layer.tanh(20),
+        Layer.linear(1)
+    ])
+
+    plant = FFNN([Layer.linear(6),Layer.linear(4)])
 
     adhdp = ADHDP(actor, critic, plant, population)
 
@@ -306,26 +291,33 @@ def acceleration_test_2d():
         rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_RESIZABLE)
         rl.init_window(800, 700, "Acc2D")
 
-    adhdp.gamma = .99
+    adhdp.gamma = 0.99
     adhdp.train_critic = True
-    adhdp.train_actor = True
+    adhdp.train_actor = False
+    adhdp.train_actor_on_initial = False
     adhdp.train_plant = False
+
     adhdp.use_plant = False
     adhdp.use_actor = True
+    adhdp.actor_learning_rate = 1e-3
+    adhdp.critic_learning_rate = 1e-2
     #adhdp.plant_learning_rate = 1e-3
+
+    critic.load_weights_from("acc2d/critic_trained_p99.dat")
+    #critic.load_weights_from("acc2d/critic_trained_p0.dat")
+    actor.load_weights_from("acc2d/actor_trained_p99.dat")
 
     window_closed = False
     error_evolution = np.zeros((epochs, 3))
     for epoch in range(epochs):
-        state_init = np.hstack((np.random.uniform(-1, 1, (population, 4)), 
-                                np.zeros((population, 8))))
+        state_init = np.random.uniform(-1, 1, (population, 4))
         state = Acc2D(state_init)
 
         #if epoch > 5:
         #    adhdp.use_plant = True
 
         if adhdp.gamma < 0.99:
-            adhdp.gamma = 1 - (1-adhdp.gamma) * 0.79
+            adhdp.gamma = 1 - (1-adhdp.gamma) * 0.9
 
         time = 0
         error_evolution_run = []
@@ -334,11 +326,15 @@ def acceleration_test_2d():
             dt = TIMESTEP
 
             state = adhdp.step_and_learn(state, dt)
+            r = state.get_reward(adhdp)
 
-            if time > 10:
+            if np.median(r) < -0.00999:
                 break
 
-            if np.average(state.get_reward(adhdp)) < 1e-4:
+            if rl.is_key_pressed(rl.KeyboardKey.KEY_R):
+                break
+
+            if np.average(state.get_reward(adhdp)) > 1e3:
                 break
 
             # Visualization
@@ -354,22 +350,28 @@ def acceleration_test_2d():
         if window_closed:
             break
 
-        error_evolution[epoch] = np.average(np.average(np.array(error_evolution_run), axis=2), axis=0)
-        print(epoch, error_evolution[epoch])
+        if len(error_evolution_run) != 0:
+            error_evolution[epoch] = np.average(np.average(np.array(error_evolution_run), axis=2), axis=0)
+            print(epoch, error_evolution[epoch])
     
     if DISPLAY:
         rl.close_window()
 
+    #critic.save_weights_to("acc2d/critic_trained_p0.dat")
     #critic.save_weights_to("acc2d/critic_trained_p99.dat")
     #actor.save_weights_to("acc2d/actor_trained_p99.dat")
     #plant.save_weights_to("acc2d/plant_trained_p99.dat")
-    plant.show_weights()
+    #plant.show_weights()
+
 
     fig, ax = plt.subplots(1, 1)
     ax.plot(error_evolution[:,0], label='actor')
     ax.plot(error_evolution[:,1], label='critic')
     ax.plot(error_evolution[:,2], label='plant')
     fig.legend()
+
+    adhdp.plot_actor_critic(0,1)
+    adhdp.plot_critic_gradient(0,1, 0,1)
 
     plt.show()
 
@@ -387,9 +389,9 @@ def prep_critic(critic: Network):
         print(i, ee[i], x, out)
 
     plt.plot(ee)
-    plt.show()
+    #plt.show()
 
 
 if __name__ == "__main__":
-    #acceleration_test()
-    acceleration_test_2d()
+    acceleration_test()
+    #acceleration_test_2d()
