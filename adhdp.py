@@ -24,13 +24,13 @@ class ADHDPState:
     def get_dsdu(self, dt: float, u: np.ndarray) -> np.ndarray:
         return np.zeros(len(self.internal_state))
     
-    def check_dsdu(self):
+    def check_dsdu(self, u_size: int):
         EPSILON_U = 0.1
         DELTA_T = 0.1
-        dsdu = self.get_dsdu(DELTA_T)
+        u = np.zeros((len(self), u_size))
+        dsdu = self.get_dsdu(DELTA_T, u)
         dsdu_fd = np.zeros(dsdu.shape)
-        dpdu_fd = np.zeros((self.internal_state.shape[0], self.internal_state.shape[1], dsdu.shape[2]))
-        u = np.zeros((dsdu.shape[0], dsdu.shape[2]))
+        dpdu_fd = np.zeros((len(self), self.internal_state.shape[1], dsdu.shape[2]))
         for u_axis in range(dsdu.shape[2]):
             u[:,u_axis] = EPSILON_U
             state_plus = self.step_forward(u, DELTA_T)
@@ -57,17 +57,19 @@ class ADHDP:
         self.critic = p_critic
         self.plant = p_plant
 
-        self.train_actor: bool = True
+        self.train_actor: bool = False
         self.train_actor_on_initial: bool = False
-        self.train_critic: bool = True
-        self.train_plant: bool = True
+        self.train_critic: bool = False
+        self.train_plant: bool = False
 
-        self.use_plant: bool = False
-        self.use_actor: bool = False
+        self.use_plant: bool = True
+        self.use_actor: bool = True
 
         self.actor_learning_rate: float = 1e-3
         self.critic_learning_rate: float = 1e-3
         self.plant_learning_rate: float = 1e-3
+
+        self.actor_weight_mask = np.ones(self.actor.weights.shape)
 
         self.gamma: float = 0
 
@@ -76,28 +78,35 @@ class ADHDP:
         self.s_size = self.actor.get_layer_size(0)
         self.u_size = self.actor.get_layer_size(-1)
 
+        self.u = np.zeros((population, self.u_size))
+
         self.u_offsets = np.zeros((population, self.u_size))
+
+        self.actor_save_path: str|None=None
+        self.critic_save_path: str|None=None
+        self.plant_save_path: str|None=None
+       
 
     def step_and_learn(self, states: ADHDPState, dt: float) -> ADHDPState:
         actor_inputs = states.get_s()
-        u = np.zeros((len(states), self.u_size))
-        dsdu = states.get_dsdu(dt, u)
+        self.u = np.zeros((len(states), self.u_size))
+        dsdu = states.get_dsdu(dt, self.u)
 
         #grad_actor = np.zeros((len(states), self.u_size, len(self.actor.weights)))
         
         if self.use_actor:
             for i in range(len(states)):
-                u[i] = self.actor.eval(actor_inputs[i])
+                self.u[i] = self.actor.eval(actor_inputs[i])
         else:
-            u = states.get_initial_control()
+            self.u = states.get_initial_control()
             #for i in range(len(states)):
             #    u[i] = self.get_optimal_actor_play(actor_inputs[i], dsdu[i])
 
-        u += self.u_offsets
+        self.u += self.u_offsets
 
-        next_states = states.step_forward(u, dt)
+        next_states = states.step_forward(self.u, dt)
         next_actor_inputs = next_states.get_s()
-        next_dsdu = next_states.get_dsdu(dt, u)
+        next_dsdu = next_states.get_dsdu(dt, self.u)
         rewards = states.get_reward(self)
 
         if self.train_actor_on_initial:
@@ -105,8 +114,8 @@ class ADHDP:
 
         for i in range(len(states)):
             reward = rewards[i]
-            critic_input = np.concatenate((actor_inputs[i], u[i]))
-            next_critic_input = np.concatenate((next_actor_inputs[i], u[i]))
+            critic_input = np.concatenate((actor_inputs[i], self.u[i]))
+            next_critic_input = np.concatenate((next_actor_inputs[i], self.u[i]))
 
             if self.train_plant:
                 _, E_p = self.plant.learn_gd(self.plant_learning_rate, critic_input, next_actor_inputs[i] - actor_inputs[i])
@@ -146,9 +155,11 @@ class ADHDP:
                 else:
                     dsdu_ = dsdu[i].reshape(self.s_size, self.u_size)
 
-                grad_actor_now = dJdu @ grad_actor
+                grad_actor_now =  dJdu @ grad_actor
                 grad_actor_next = dJds @ dsdu_ @ grad_actor
                 true_grad_actor = grad_actor_now + grad_actor_next
+
+                true_grad_actor *= self.actor_weight_mask
 
                 actor_weight_delta = true_grad_actor.flatten() * -self.actor_learning_rate
                 #actor_weight_delta = (true_grad_actor.T @ e_a).flatten() * self.actor_learning_rate
@@ -164,7 +175,6 @@ class ADHDP:
         return next_states
 
     def get_optimal_actor_play(self, s: np.ndarray, dsdu: np.ndarray) -> np.ndarray:
-        
         u = np.zeros(2)
         critic_io_derivatives = self.critic.get_io_gradient(np.concatenate((s, u)))
         dJds = critic_io_derivatives[:,:self.s_size]
@@ -225,3 +235,11 @@ class ADHDP:
 
         ax1.imshow(critic_gradient)
         fig.tight_layout()
+
+    def save_networks(self):
+       if self.actor_save_path is not None:
+           self.actor.save_weights_to(self.actor_save_path)
+       if self.critic_save_path is not None:
+           self.critic.save_weights_to(self.critic_save_path)
+       if self.plant_save_path is not None:
+           self.plant.save_weights_to(self.plant_save_path) 

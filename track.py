@@ -2,8 +2,7 @@ import numpy as np
 import pyray as rl
 
 from common import *
-from math import fmod, floor
-
+from math import fmod, floor, sin, cos
 
 class TrackWall:
     def __init__(self, **kwargs) -> None:
@@ -404,7 +403,7 @@ class Track:
                 covered_length += self.segments[i].length
         return res
 
-    def show(self, state: np.ndarray, c=HIGHLIGHT):
+    def show(self, state: np.ndarray, u: np.ndarray, c=HIGHLIGHT):
         for seg in self.segments:
             seg.draw()
 
@@ -422,7 +421,9 @@ class Track:
             rl.draw_circle(int(pos[0]), int(pos[1]), 4.0, color)
             
             pos2 = pos + state[i,2:4]
+            upos2 = pos + np.array([cos(u[i]), sin(u[i])]) * 20
             rl.draw_line(int(pos[0]), int(pos[1]), int(pos2[0]), int(pos2[1]), color)
+            rl.draw_line(int(pos[0]), int(pos[1]), int(upos2[0]), int(upos2[1]), rl.GREEN)
 
     def evaluate_path(self, spawns: np.ndarray) -> np.ndarray:
         spawns = np.mod(spawns, len(self.segments))

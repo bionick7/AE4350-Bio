@@ -8,6 +8,7 @@ from adhdp import ADHDP, ADHDPState
 from track import Track, TrackSegmentArc
 from common import *
 
+from copy import copy
 from math import exp
 
 def get_player_input() -> np.ndarray:
@@ -48,10 +49,24 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
     learning = []
 
     outer_loop = True
+    new_reach = 2e6
+
+    win_condition = 3
+    centers_track_positions = (adhdp.actor.centers[:,0] + 1) / 2 * len(track.segments)
+    adhdp.actor_weight_mask = np.append(np.exp(-np.square(centers_track_positions - win_condition)), 0)
+
+    best_actor_weights = adhdp.actor.weights
+    best_reach = 0
+    old_critic_weights = adhdp.critic.weights
+
     while outer_loop:
         # Generate states
         states = TrackStateRot(track, gen_state(track, population, True))
+        states.win_condition = win_condition
         time = 0
+
+        new_reach = 1e6
+
         while True:
             dt = DELTA_TIME
             #dt = rl.get_frame_time()
@@ -66,16 +81,20 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
 
                 states: TrackStateRot = adhdp.step_and_learn(states, dt)
             
-                if np.average(states.get_reward(adhdp)) > 100:
-                    break
+                #if np.average(states.get_reward(adhdp)) > 100:
+                #    break
                 #if np.median(states.get_reward(adhdp)) < 1e-2:
                 #    break
                 #if time > 10:
                 #    break
 
-                #print(np.average(adhdp.error[1]))
-                learning.append(np.average(adhdp.error, axis=1))
+                if np.all(states.reset):
+                    new_reach = np.average(states.internal_state[:,4] - np.minimum(states.collision_impact * 0.01, 1))
+                    break
 
+                #print(np.average(adhdp.error[1]))
+                #avg_performance = np.average(adhdp.error, axis=1)
+                learning.append(np.average(adhdp.error, axis=1))
 
             # Drawing
             rl.begin_drawing()
@@ -84,7 +103,7 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
             update_camera(camera) 
             
             xx = states.get_positions()
-            track.show(xx)
+            track.show(xx, adhdp.u)
             track.show_player_rays(states.internal_state, 4)
 
             rl.end_mode_2d()
@@ -99,10 +118,7 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
             if rl.is_key_pressed(rl.KeyboardKey.KEY_SPACE) or rl.is_gamepad_button_pressed(0, 0):
                 paused = not paused
             if rl.is_key_pressed(rl.KeyboardKey.KEY_S):
-                adhdp.actor.save_weights_to("norays_rot/actor_prepped.dat")
-                adhdp.critic.save_weights_to("norays_rot/critic_rbf.dat")
-                #adhdp.plant.save_weights_to("norays_vel/plant.dat")
-                pass
+                adhdp.save_networks()
 
             if rl.is_key_pressed(rl.KeyboardKey.KEY_R):
                 break
@@ -114,15 +130,33 @@ def visualize(track: Track, adhdp: ADHDP, population: int):
             #if len(learning) > 0:
             #    break
         
+        # Update graph
         ax.clear()
         learning_array = np.array(learning)
-        ax.plot(learning_array[:,0], label="actor")
+        ax.plot(learning_array[:,0] / 100, label="J")
         ax.plot(learning_array[:,1], label="critic")
         ax.plot(learning_array[:,2], label="plant")
+        #ax.plot(learning_array[:,3], label="reward")
         #ax.set_ylim((0, 0.01))
         ax.grid()
         ax.legend()
         plt.pause(1e-10)
+
+        if adhdp.train_actor and adhdp.train_critic:
+            if new_reach > best_reach:
+                best_reach = new_reach 
+                best_actor_weights = adhdp.actor.weights
+                #old_critic_weights = adhdp.critic.weights
+            else:
+                print(new_reach, best_reach)
+                adhdp.actor.weights = best_actor_weights + np.random.normal(0, 0.1, best_actor_weights.shape) * adhdp.actor_weight_mask
+                #adhdp.critic.weights = old_critic_weights + np.random.normal(0, 0.01, old_critic_weights.shape)
+                
+        if np.count_nonzero(states.win_mask) > len(states) / 2:
+            win_condition = min(win_condition + 0.1, len(track.segments))
+            centers_track_positions = (adhdp.actor.centers[:,0] + 1) / 2 * len(track.segments)
+            adhdp.actor_weight_mask = np.append(np.exp(-np.square(centers_track_positions - win_condition)), 0)
+            print(win_condition)
         
     rl.close_window()
     #plt.plot(learning_c, label="actor")
@@ -135,12 +169,13 @@ def generate_networks() -> tuple[Network, Network, Network]:
     
     actor = RBFNN.grid_spaced(1,
         np.linspace(-1, 1, 30), 
-        np.linspace(-1, 1, 5))
+        np.linspace(-1, 1, 5),
+        stdev_mult=2)
 
     #actor = FFNN([
     #    Layer.linear(2),
     #    Layer.tanh(20),
-    #    Layer.tanh(2),
+    #    Layer.tanh(1),
     #], (-1, 1), (-1, 1))
 
     #critic = RBFNN.grid_spaced(1, 
@@ -150,20 +185,18 @@ def generate_networks() -> tuple[Network, Network, Network]:
 
     critic = FFNN([
         Layer.linear(3),
-        Layer.tanh(10),
-        Layer.tanh(10),
+        Layer.tanh(20),
+        Layer.tanh(20),
         Layer.linear(1),
     ], (-1, 1), (-1, 1))
 
     plant = FFNN([
-        Layer.linear(3),
+        Layer.linear(3), 
         Layer.tanh(10),
         Layer.tanh(10),
         Layer.linear(2),
     ])
 
-    actor.load_weights_from("norays_rot/actor_prepped.dat")
-    critic.load_weights_from("norays_rot/critic.dat")
     #plant.load_weights_from("norays_vel/plant.dat")
 
     return actor, critic, plant
@@ -176,29 +209,57 @@ def main():
     track = Track("editing/track1.txt")
     
     adhdp = ADHDP(*generate_networks(), population)
-    adhdp.u_offsets = np.random.normal(0, 0.0, (population, 1))
+    adhdp.actor.load_weights_from("norays_rot/actor.dat")
+    adhdp.critic.load_weights_from("norays_rot/critic.dat")
+    adhdp.u_offsets = np.random.normal(0, 0.00, (population, 1))
+    adhdp.u_offsets[0] = 0
     adhdp.gamma = 0.99
 
-    adhdp.train_actor = False
+    adhdp.train_actor = True
     adhdp.train_critic = True
-    adhdp.train_plant = False
-    adhdp.train_actor_on_initial = True
+
+    adhdp.actor_save_path = "norays_rot/actor.dat"
+    adhdp.critic_save_path = "norays_rot/critic.dat"
 
     adhdp.use_plant = False
-    adhdp.use_actor = True
-    adhdp.actor_learning_rate = 1e-2
+    adhdp.actor_learning_rate = 1e-3
     adhdp.critic_learning_rate = 1e-2
-    adhdp.plant_learning_rate = 1e-3
-    #check_io_gradients(adhdp.critic)
 
-    #test_states = TrackState(track, gen_state(track, population, False))
-    #test_states.check_dsdu()
+    #check_io_gradients(adhdp.critic)
+    #test_states = TrackStateRot(track, gen_state(track, population, False))
+    #test_states.check_dsdu(1)
 
     visualize(track, adhdp, population)
-    adhdp.plot_critic_gradient(0,1, 0,1)
+    adhdp.plot_critic_gradient(0,1, 0)
     adhdp.plot_actor_critic(0,1)
-    #adhdp.plot_actor_critic(2,3)
     plt.show()
+
+
+def pretrain():
+    import matplotlib.pyplot as plt
+
+    population = 30
+    track = Track("editing/track1.txt")
+    
+    adhdp = ADHDP(*generate_networks(), population)
+    adhdp.u_offsets = np.random.normal(0, 0.05, (population, 1))
+    adhdp.u_offsets[0] = 0
+    adhdp.gamma = 0.99
+
+    adhdp.train_critic = True
+    adhdp.train_actor_on_initial = True
+
+    adhdp.actor_save_path = "norays_rot/actor_prepped.dat"
+    adhdp.critic_save_path = "norays_rot/critic.dat"
+    
+    adhdp.use_plant = False
+    adhdp.actor_learning_rate = 1e-2
+    adhdp.critic_learning_rate = 1e-2
+    visualize(track, adhdp, population)
+    adhdp.plot_critic_gradient(0,1, 0)
+    adhdp.plot_actor_critic(0,1)
+    plt.show()
+
 
 
 if __name__ == "__main__":

@@ -122,7 +122,7 @@ class RBFNN(Network):
         return dy_dv @ dv_din
 
     @classmethod
-    def grid_spaced(cls, output_size: int, *spacings: np.ndarray,
+    def grid_spaced(cls, output_size: int, *spacings: np.ndarray, stdev_mult: float=1.5,
                     w_clamp: tuple[float, float]=(-1,1), b_clamp: tuple[float, float]=(-1,1)) -> RBFNN:
         ''' Assumes equal spacing '''
         input_size = len(spacings)
@@ -133,7 +133,7 @@ class RBFNN(Network):
         stdevs = np.zeros(input_size)
         for i, spacing in enumerate(spacings):
             stdevs[i] = (np.max(spacing) - np.min(spacing)) / len(spacing)
-        res.set_rbfs(centers, np.ones(centers.shape) * stdevs*1.5)
+        res.set_rbfs(centers, np.ones(centers.shape) * stdevs*stdev_mult)
         return res
 
 class Layer:
