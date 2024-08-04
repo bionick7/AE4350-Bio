@@ -4,7 +4,7 @@ import pyray as rl
 
 
 MAX_VEL = 100
-VEL_SCALE = 10000
+VEL_SCALE = 100
 
 FORCE = 100
 DELTA_TIME = 0.5

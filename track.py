@@ -204,7 +204,7 @@ class TrackSegmentLine(TrackSegment):
         ])
         self.length = np.linalg.norm(p_end - p_start)
         self._normalized_dir = (p_end - p_start) / self.length
-        self._tan_dir = self._normalized_dir[[1,0]] * np.array([1,-1])
+        self._orthogonal_dir = self._normalized_dir[[1,0]] * np.array([1,-1])
     
     def get_closest_point_on_track(self, pt: np.ndarray) -> np.ndarray:
         t = (pt - self.start).dot(self._normalized_dir)
@@ -212,7 +212,7 @@ class TrackSegmentLine(TrackSegment):
     
     def get_track_coordinates(self, pt: np.ndarray) -> np.ndarray:
         along = (pt - self.start).dot(self._normalized_dir)
-        across = (pt - self.start).dot(self._tan_dir)
+        across = (pt - self.start).dot(self._orthogonal_dir)
         return np.concatenate([along, across]).reshape(2, -1).T
     
     def get_tangent_at(self, pts: np.ndarray) -> np.ndarray:
@@ -242,13 +242,10 @@ class TrackSegmentArc(TrackSegment):
     def get_track_coordinates(self, pt: np.ndarray) -> np.ndarray:
         rel_pt = pt - self._center
         angle = np.arctan2(rel_pt[:,1], rel_pt[:,0])
-        #angle = min(max(angle, 0), self._a2 - self._a1)
         t_ang = (angle - self._a1) % (2*np.pi)
         # Half the outside range is negative
         t_ang[t_ang > (self._a2 - self._a1) / 2 + np.pi] -= np.pi*2
         along = t_ang * self._radius
-        cos_sin = np.concatenate((np.cos(angle), np.sin(angle))).reshape(2, -1).T
-        closest = self._center + cos_sin * self._radius
         across = np.linalg.norm(rel_pt, axis=1) - self._radius
         
         return np.concatenate((along, across)).reshape(2, -1).T

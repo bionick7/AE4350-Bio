@@ -162,7 +162,7 @@ class ADHDP:
                 true_grad_actor *= self.actor_weight_mask
 
                 actor_weight_delta = true_grad_actor.flatten() * -self.actor_learning_rate
-                #actor_weight_delta = (true_grad_actor.T @ e_a).flatten() * self.actor_learning_rate
+                #actor_weight_delta = (true_grad_actor.T @ e_a).flatten() * -self.actor_learning_rate
                 #actor_weight_delta = levenberg_marquardt(true_grad_actor, e_a, 0.01)
                 self.actor.update_weights(actor_weight_delta)
                 E_a: float = J_next

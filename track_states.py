@@ -48,7 +48,7 @@ def gen_state(track: Track, count: int, concentrated: bool) -> np.ndarray:
 
     scatter_radius = track.track_width / np.sqrt(8)
     state_init[:,:2] = track.evaluate_path(spawns)
-    state_init[:,1] += np.random.uniform(-scatter_radius, scatter_radius, state_init[:,1].shape)
+    state_init[:,:2] += np.random.uniform(-scatter_radius, scatter_radius, state_init[:,:2].shape)
     state_init[:,2:4] = np.random.uniform(-1, 1, (count, 2)) * 0
     state_init[:,4] = spawns
     return state_init
@@ -230,7 +230,9 @@ class TrackStateRot(ADHDPState):
     
     def get_initial_control(self) -> np.ndarray:
         tangents = self.track.get_path_dir(self.internal_state)
-        return np.arctan2(tangents[:,1], tangents[:,0]) + 0.2
+        rots = np.arctan2(tangents[:,1], tangents[:,0])
+        rots = np.mod(rots, np.pi*2) + 0.5
+        return rots
 
     def step_forward(self, u: np.ndarray, dt: float) -> Self:
         #u = np.random.normal(0, 0.1, u.shape)
@@ -258,7 +260,7 @@ class TrackStateRot(ADHDPState):
         collision_impact[collision_mask] = (
             - collisions[collision_mask,2] * self.internal_state[collision_mask,2]
             - collisions[collision_mask,3] * self.internal_state[collision_mask,3])
-        next_states[collision_mask,:2] = collisions[collision_mask,:2]
+        next_states[collision_mask,:2] = collisions[collision_mask,:2] + collisions[collision_mask,2:4]
         next_states[collision_mask,2:4] = 0
 
         # reset next to start (so masks can be used in reward function w/o delay)
@@ -271,7 +273,7 @@ class TrackStateRot(ADHDPState):
         next_states[self.reset] = self.internal_state[self.reset]
 
         res = TrackStateRot(self.track, next_states)
-        res.reset = np.logical_or(np.logical_or(self.collision_mask, self.win_mask), self.reset)
+        res.reset = self.internal_state[:,0] != self.internal_state[:,0]#np.logical_or(np.logical_or(self.collision_mask, self.win_mask), self.reset)
         res.collision_impact = collision_impact
         res.collision_mask = collision_mask
         res.win_mask = win_mask
@@ -302,13 +304,15 @@ class TrackStateRot(ADHDPState):
         return dsdu
 
     def get_reward(self, adhdp: ADHDP) -> np.ndarray:
-        #along_tracks, across_tracks = self.track.get_track_coordinates(self.internal_state).T
-        #center_distance = 2*np.abs(across_tracks) / self.track.track_width
-        #velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / VEL_SCALE
-        progress = - (self.internal_state[:,4] - 1) / len(self.track.segments)
+        along_tracks, across_tracks = self.track.get_track_coordinates(self.internal_state).T
+        center_distance = 2*np.abs(across_tracks) / self.track.track_width
+        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / VEL_SCALE
+        progress = 1 - (self.internal_state[:,4] - 1) / len(self.track.segments)
         #return 0.01 - self.win_mask.astype(float) + self.collision_mask.astype(float)
-        return (progress
-            ) * (1 - adhdp.gamma) - self.win_mask.astype(float) + np.minimum(self.collision_impact * 0.01, 1)
+        res = progress * (1 - adhdp.gamma)
+        #return res
+        return (progress + np.minimum(self.collision_impact * 0.01, 1)
+            ) * (1 - adhdp.gamma)# - self.win_mask.astype(float)
     
     def get_positions(self) -> np.ndarray:
         return self.internal_state[:,:5]
