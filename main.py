@@ -1,16 +1,12 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import pyray as rl
 
 from track_states import TrackStateRot, gen_state
 from networks import Network, FFNN, RBFNN, Layer, check_io_gradients
-from adhdp import ADHDP, ADHDPState
-from track import Track, TrackSegmentArc
+from adhdp import ADHDP
+from track import Track
 from visualization import visualize_adhdp
 from common import *
-
-from copy import copy
-from math import exp
 
 GAMMA = 0.9
 
@@ -53,9 +49,7 @@ def generate_networks() -> tuple[Network, Network, Network]:
     return actor, critic, plant
 
 
-def main():
-    import matplotlib.pyplot as plt
-
+def run_with_maxvel(max_vel: float):
     population = 30
     track = Track("editing/track1.txt")
     
@@ -63,14 +57,12 @@ def main():
     adhdp.actor.load_weights_from("norays_rot/actor_prepped.dat")
     adhdp.critic.load_weights_from("norays_rot/critic.dat")
     adhdp.u_offsets = np.random.normal(0, 0.1, (population, 1))
-    adhdp.u_offsets[0] = 0
+    #adhdp.u_offsets[0] = 0
     adhdp.gamma = GAMMA
+    adhdp.state_config = { "max_vel": max_vel, "vel_scale": 100, "force": 100 }
 
     adhdp.train_actor = True
     adhdp.train_critic = True
-
-    adhdp.actor_save_path = "norays_rot/actor.dat"
-    adhdp.critic_save_path = "norays_rot/critic.dat"
 
     adhdp.use_plant = False
     adhdp.actor_learning_rate = 5e-3
@@ -80,10 +72,10 @@ def main():
     #test_states = TrackStateRot(track, gen_state(track, population, False))
     #test_states.check_dsdu(1)
 
-    visualize_adhdp(track, adhdp, population, True)
-    adhdp.plot_critic_gradient(0,1, 0)
-    adhdp.plot_actor_critic(0,1)
-    plt.show()
+    visualize_adhdp(track, adhdp, "mvel" + str(max_vel) + "_r3", population, True)
+    #adhdp.plot_critic_gradient(0,1, 0)
+    #adhdp.plot_actor_critic(0,1)
+    #plt.show()
 
 
 def pretrain():
@@ -157,4 +149,5 @@ def post_train():
 
 if __name__ == "__main__":
     #pretrain()
-    main()
+    for mvel in [50, 100, np.inf]:
+        run_with_maxvel(mvel)

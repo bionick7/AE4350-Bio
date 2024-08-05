@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from typing import Callable, Self
+from typing import Callable, Self, Any
 from copy import copy
 
 from common import *
@@ -10,6 +10,7 @@ from networks import Network, Layer, FFNN, RBFNN, levenberg_marquardt
 class ADHDPState:
     def __init__(self, p_internal_state: np.ndarray):
         self.internal_state = p_internal_state
+        self.config: dict = {}
 
     def step_forward(self, u: np.ndarray, dt: float) -> Self:
         res = copy(self)
@@ -41,7 +42,7 @@ class ADHDPState:
             
         print(dsdu_fd / dsdu)
 
-    def get_reward(self, adhdhp: 'ADHDP') -> np.ndarray:
+    def get_reward(self) -> np.ndarray:
         return np.zeros(len(self))
 
     def __copy__(self) -> Self:
@@ -81,11 +82,14 @@ class ADHDP:
         self.u = np.zeros((population, self.u_size))
 
         self.u_offsets = np.zeros((population, self.u_size))
+        self.state_config: dict[str, Any] = {}
 
         self.actor_save_path: str|None=None
         self.critic_save_path: str|None=None
         self.plant_save_path: str|None=None
-       
+
+    def gen_state_config(self) -> dict[str, Any]:
+        return {**self.state_config, "gamma": self.gamma }       
 
     def step_and_learn(self, states: ADHDPState, dt: float) -> ADHDPState:
         actor_inputs = states.get_s()
@@ -105,9 +109,10 @@ class ADHDP:
         self.u += self.u_offsets
 
         next_states = states.step_forward(self.u, dt)
+        next_states.config = self.gen_state_config()
+
         next_actor_inputs = next_states.get_s()
-        next_dsdu = next_states.get_dsdu(dt, self.u)
-        rewards = states.get_reward(self)
+        rewards = states.get_reward()
 
         if self.train_actor_on_initial:
             u_expected = next_states.get_initial_control()

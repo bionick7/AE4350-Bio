@@ -68,8 +68,8 @@ class TrackStateDirect(ADHDPState):
     def step_forward(self, u: np.ndarray, dt: float) -> Self:
         #u = np.random.normal(0, 0.1, u.shape)
         next_states = np.zeros(self.internal_state.shape)
-        next_states[:,:2] = self.internal_state[:,:2] + u*FORCE * dt
-        next_states[:,2:4] = u*FORCE
+        next_states[:,:2] = self.internal_state[:,:2] + u*self.config.get("force", 1) * dt
+        next_states[:,2:4] = u*self.config.get("force", 1)
         next_states[:,4] = self.internal_state[:,4]
 
         # Update track distance
@@ -92,7 +92,9 @@ class TrackStateDirect(ADHDPState):
         next_states[self.win_mask] = gen_state(self.track, np.count_nonzero(self.win_mask), True)
 
         # limits
-        next_states[:,2:4] = np.maximum(np.minimum(next_states[:,2:4], MAX_VEL), -MAX_VEL)
+        max_vel = self.config.get("max_vel")
+        next_states_vel_norm = np.linalg.norm(next_states[:,2:4], axis=1)
+        next_states[next_states_vel_norm > max_vel,2:4] = next_states[next_states_vel_norm > max_vel,2:4] / next_states_vel_norm[next_states_vel_norm > max_vel,np.newaxis] * max_vel
 
         res = TrackStateDirect(self.track, next_states)
         res.collision_mask = collision_mask
@@ -109,7 +111,7 @@ class TrackStateDirect(ADHDPState):
         return s
 
     def get_dsdu(self, dt: float, u: np.ndarray) -> np.ndarray:
-        dcartdu = np.eye(2) * FORCE * dt
+        dcartdu = np.eye(2) * self.config.get("force", 1) * dt
 
         dcartds = get_dcartds(self.track, self.internal_state)
 
@@ -120,14 +122,14 @@ class TrackStateDirect(ADHDPState):
         dsdu *= (1 - self.collision_mask.astype(float)[:,np.newaxis,np.newaxis])
         return dsdu
 
-    def get_reward(self, adhdp: ADHDP) -> np.ndarray:
+    def get_reward(self) -> np.ndarray:
         along_tracks, across_tracks = self.track.get_track_coordinates(self.internal_state).T
         center_distance = 2*np.abs(across_tracks) / self.track.track_width
-        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / VEL_SCALE
+        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / self.config.get("vel_scale", 1)
         progress = 1 - (self.internal_state[:,4] - 1) / len(self.track.segments)
         #return 0.01 - self.win_mask.astype(float) + self.collision_mask.astype(float)
         return (progress
-            ) * (1 - adhdp.gamma) - self.win_mask.astype(float) + self.collision_mask.astype(float)
+            ) * (1 - self.config["gamma"]) - self.win_mask.astype(float) + self.collision_mask.astype(float)
     
     def get_positions(self) -> np.ndarray:
         return self.internal_state[:,:5]
@@ -151,8 +153,8 @@ class TrackState(ADHDPState):
     def step_forward(self, u: np.ndarray, dt: float) -> Self:
         #u = np.random.normal(0, 0.1, u.shape)
         next_states = np.zeros(self.internal_state.shape)
-        next_states[:,:2] = self.internal_state[:,:2] + .5 * u*FORCE * dt*dt + self.internal_state[:,2:4] * dt
-        next_states[:,2:4] = self.internal_state[:,2:4] + u*FORCE * dt
+        next_states[:,:2] = self.internal_state[:,:2] + .5 * u*self.config.get("force", 1) * dt*dt + self.internal_state[:,2:4] * dt
+        next_states[:,2:4] = self.internal_state[:,2:4] + u*self.config.get("force", 1) * dt
         next_states[:,4] = self.internal_state[:,4]
 
         # Update track distance
@@ -175,7 +177,9 @@ class TrackState(ADHDPState):
         next_states[self.win_mask] = gen_state(self.track, np.count_nonzero(self.win_mask), True)
 
         # limits
-        next_states[:,2:4] = np.maximum(np.minimum(next_states[:,2:4], MAX_VEL), -MAX_VEL)
+        max_vel = self.config.get("max_vel")
+        next_states_vel_norm = np.linalg.norm(next_states[:,2:4], axis=1)
+        next_states[next_states_vel_norm > max_vel,2:4] = next_states[next_states_vel_norm > max_vel,2:4] / next_states_vel_norm[next_states_vel_norm > max_vel,np.newaxis] * max_vel
 
         res = TrackState(self.track, next_states)
         res.collision_mask = collision_mask
@@ -189,11 +193,11 @@ class TrackState(ADHDPState):
         track_length = sum([x.length for x in self.track.segments])
         s[:,0] = np.pi * tc[:,0] / track_length * 2.0 - 1.0
         s[:,1] = tc[:,1] * 2 / self.track.track_width
-        s[:,2:4] = self.internal_state[:,2:4] / VEL_SCALE
+        s[:,2:4] = self.internal_state[:,2:4] / self.config.get("vel_scale", 1)
         return s
 
     def get_dsdu(self, dt: float, u: np.ndarray) -> np.ndarray:
-        dcartdu = np.eye(2) * FORCE * dt*dt*0.5
+        dcartdu = np.eye(2) * self.config.get("force", 1) * dt*dt*0.5
 
         dcartds = get_dcartds(self.track, self.internal_state)
         dcartds[:,:,0] *= 1/np.pi  # Determined empirically
@@ -201,18 +205,18 @@ class TrackState(ADHDPState):
         dsdu = np.zeros((len(self), 4, 2))
         for i in range(len(self)):
             dsdu[i,:2] = np.linalg.solve(dcartds[i], dcartdu)
-            dsdu[i,2:] = np.eye(2) * FORCE / VEL_SCALE
+            dsdu[i,2:] = np.eye(2) * self.config.get("force", 1) / self.config.get("vel_scale", 1)
         
         dsdu *= (1 - self.collision_mask.astype(float)[:,np.newaxis,np.newaxis])
         return dsdu
 
-    def get_reward(self, adhdp: ADHDP) -> np.ndarray:
+    def get_reward(self) -> np.ndarray:
         along_tracks, across_tracks = self.track.get_track_coordinates(self.internal_state).T
         center_distance = 2*np.abs(across_tracks) / self.track.track_width
-        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / VEL_SCALE
+        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / self.config.get("vel_scale", 1)
         progress = 1 - (self.internal_state[:,4] / len(self.track.segments) - 1)
         return (progress
-            ) * (1 - adhdp.gamma) - self.win_mask.astype(float) + self.collision_mask.astype(float)
+            ) * (1 - self.config["gamma"]) - self.win_mask.astype(float) + self.collision_mask.astype(float)
     
     def get_positions(self) -> np.ndarray:
         return self.internal_state[:,:5]
@@ -238,8 +242,8 @@ class TrackStateRot(ADHDPState):
         #u = np.random.normal(0, 0.1, u.shape)
         next_states = np.zeros(self.internal_state.shape)
         force = np.zeros((len(self), 2))
-        force[:,0] = np.cos(u[:,0]) * FORCE
-        force[:,1] = np.sin(u[:,0]) * FORCE
+        force[:,0] = np.cos(u[:,0]) * self.config.get("force", 1)
+        force[:,1] = np.sin(u[:,0]) * self.config.get("force", 1)
         next_states[:,:2] = self.internal_state[:,:2] + force * dt*dt*0.5 + self.internal_state[:,2:4] * dt
         next_states[:,2:4] = self.internal_state[:,2:4] + force * dt
         next_states[:,4] = self.internal_state[:,4]
@@ -268,8 +272,9 @@ class TrackStateRot(ADHDPState):
         #next_states[self.win_mask] = gen_state(self.track, np.count_nonzero(self.win_mask), True)
 
         # limits
+        max_vel = self.config.get("max_vel")
         next_states_vel_norm = np.linalg.norm(next_states[:,2:4], axis=1)
-        next_states[next_states_vel_norm > MAX_VEL,2:4] = next_states[next_states_vel_norm > MAX_VEL,2:4] / next_states_vel_norm[next_states_vel_norm > MAX_VEL,np.newaxis] * MAX_VEL
+        next_states[next_states_vel_norm > max_vel,2:4] = next_states[next_states_vel_norm > max_vel,2:4] / next_states_vel_norm[next_states_vel_norm > max_vel,np.newaxis] * max_vel
         next_states[self.reset] = self.internal_state[self.reset]
 
         res = TrackStateRot(self.track, next_states)
@@ -291,8 +296,8 @@ class TrackStateRot(ADHDPState):
 
     def get_dsdu(self, dt: float, u: np.ndarray) -> np.ndarray:
         dcartdu = np.zeros((len(self), 2))
-        dcartdu[:,0] = -np.sin(u[:,0]) * FORCE * dt*dt*.5
-        dcartdu[:,1] =  np.cos(u[:,0]) * FORCE * dt*dt*.5
+        dcartdu[:,0] = -np.sin(u[:,0]) * self.config.get("force", 1) * dt*dt*.5
+        dcartdu[:,1] =  np.cos(u[:,0]) * self.config.get("force", 1) * dt*dt*.5
 
         dcartds = get_dcartds(self.track, self.internal_state)
 
@@ -303,16 +308,16 @@ class TrackStateRot(ADHDPState):
         dsdu *= (1 - self.reset.astype(float)[:,np.newaxis,np.newaxis])
         return dsdu
 
-    def get_reward(self, adhdp: ADHDP) -> np.ndarray:
+    def get_reward(self) -> np.ndarray:
         along_tracks, across_tracks = self.track.get_track_coordinates(self.internal_state).T
         center_distance = 2*np.abs(across_tracks) / self.track.track_width
-        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / VEL_SCALE
+        velocity_norm = np.linalg.norm(self.internal_state[:,2:4], axis=1) / self.config.get("vel_scale", 1)
         progress = 1 - (self.internal_state[:,4] - 1) / len(self.track.segments)
         #return 0.01 - self.win_mask.astype(float) + self.collision_mask.astype(float)
-        res = progress * (1 - adhdp.gamma)
+        res = progress * (1 - self.config["gamma"])
         #return res
         return (progress + np.minimum(self.collision_impact * 0.01, 1)
-            ) * (1 - adhdp.gamma)# - self.win_mask.astype(float)
+            ) * (1 - self.config["gamma"])# - self.win_mask.astype(float)
     
     def get_positions(self) -> np.ndarray:
         return self.internal_state[:,:5]

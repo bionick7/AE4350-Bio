@@ -42,9 +42,9 @@ class Acc1D(ADHDPState):
         dsdu_single = np.array([[self.force_multiplier*dt*dt*0.5], [self.force_multiplier*dt]])
         return np.repeat(dsdu_single[np.newaxis,:], len(self), axis=0)
 
-    def get_reward(self, adhdp: ADHDP) -> np.ndarray:
+    def get_reward(self) -> np.ndarray:
         p, p_dot, *_ = self.internal_state.T
-        return (p*p + p_dot*p_dot) ** 0.1 * (1 - adhdp.gamma)
+        return (p*p + p_dot*p_dot) ** 0.1 * (1 - self.config["gamma"])
 
     def __copy__(self) -> ADHDPState:
         return ADHDPState(self.internal_state.copy())
@@ -80,7 +80,7 @@ class Acc2D(ADHDPState):
 
     def get_reward(self, adhdp: ADHDP) -> np.ndarray:
         x, y, x_dot, y_dot = self.get_s().T
-        return (x*x+y*y + x_dot*x_dot+y_dot*y_dot - 1) * (1 - adhdp.gamma)
+        return (x*x+y*y + x_dot*x_dot+y_dot*y_dot - 1) * (1 - self.config["gamma"])
 
 
 def visualize_state(states: ADHDPState, adhdp: ADHDP) -> None:
@@ -125,7 +125,7 @@ def visualize_state_2d(states: ADHDPState, adhdp: ADHDP) -> None:
                        HIGHLIGHT)
         J[i] = adhdp.critic.eval(np.concatenate((ss, adhdp.actor.eval(ss))))
 
-    reward = np.average(states.get_reward(adhdp))
+    reward = np.average(states.get_reward())
     rl.draw_text(f"J = {np.average(J)}", 10, 10, 16, HIGHLIGHT)
     rl.draw_text(f"r = {reward}", 10, 30, 16, HIGHLIGHT)
     #rl.draw_text(f"Ec = {adhdp.error[1]}", 10, 20, 12, HIGHLIGHT)
@@ -217,7 +217,7 @@ def acceleration_test():
             dt = TIMESTEP
 
             state = adhdp.step_and_learn(state, dt)
-            r = state.get_reward(adhdp)
+            r = state.get_reward()
 
             if np.average(r) < 0.001:
                 break
@@ -326,7 +326,7 @@ def acceleration_test_2d():
             dt = TIMESTEP
 
             state = adhdp.step_and_learn(state, dt)
-            r = state.get_reward(adhdp)
+            r = state.get_reward()
 
             if np.median(r) < -0.00999:
                 break
@@ -334,7 +334,7 @@ def acceleration_test_2d():
             if rl.is_key_pressed(rl.KeyboardKey.KEY_R):
                 break
 
-            if np.average(state.get_reward(adhdp)) > 1e3:
+            if np.average(state.get_reward()) > 1e3:
                 break
 
             # Visualization

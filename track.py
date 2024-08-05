@@ -400,7 +400,7 @@ class Track:
                 covered_length += self.segments[i].length
         return res
 
-    def show(self, state: np.ndarray, u: np.ndarray, c=HIGHLIGHT):
+    def show(self, state: np.ndarray, u: np.ndarray):
         for seg in self.segments:
             seg.draw()
 
@@ -408,19 +408,12 @@ class Track:
 
         segment_indices = (np.floor(state[:,4] % len(self.segments))).astype(np.int32)
         for i, pos in enumerate(state[:,:2]):
-            #if segment_indices[i] != 0:
-            #    continue
-            if isinstance(c, COLOR_TYPE):
-                color = c
-            elif isinstance(c, np.ndarray):
-                c = (c*255.99).astype(np.uint8)
-                color = rl.Color(c[i,0], c[i,1], c[i,2], 255)
-            rl.draw_circle(int(pos[0]), int(pos[1]), 4.0, color)
+            rl.draw_circle(int(pos[0]), int(pos[1]), 4.0, HIGHLIGHT)
             
             pos2 = pos + state[i,2:4]
             upos2 = pos + np.array([cos(u[i]), sin(u[i])]) * 20
-            rl.draw_line(int(pos[0]), int(pos[1]), int(pos2[0]), int(pos2[1]), color)
-            rl.draw_line(int(pos[0]), int(pos[1]), int(upos2[0]), int(upos2[1]), rl.GREEN)
+            rl.draw_line(int(pos[0]), int(pos[1]), int(pos2[0]), int(pos2[1]), FG)
+            rl.draw_line(int(pos[0]), int(pos[1]), int(upos2[0]), int(upos2[1]), HIGHLIGHT)
 
     def evaluate_path(self, spawns: np.ndarray) -> np.ndarray:
         spawns = np.mod(spawns, len(self.segments))
