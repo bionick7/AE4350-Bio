@@ -3,7 +3,7 @@ from typing import Callable
 import pyray as rl
 
 
-MAX_VEL = 100
+MAX_VEL = 50
 VEL_SCALE = 100
 
 FORCE = 100
