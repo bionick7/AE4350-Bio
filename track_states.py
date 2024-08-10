@@ -46,7 +46,7 @@ def gen_state(track: Track, count: int, concentrated: bool) -> np.ndarray:
     if concentrated:
         spawns = spawns*0 + 1
 
-    scatter_radius = track.track_width / np.sqrt(8)
+    scatter_radius = track.track_width / 2.01
     state_init[:,:2] = track.evaluate_path(spawns)
     state_init[:,:2] += np.random.uniform(-scatter_radius, scatter_radius, state_init[:,:2].shape)
     state_init[:,2:4] = np.random.uniform(-1, 1, (count, 2)) * 0
@@ -316,7 +316,7 @@ class TrackStateRot(ADHDPState):
         #return 0.01 - self.win_mask.astype(float) + self.collision_mask.astype(float)
         res = progress * (1 - self.config["gamma"])
         #return res
-        return (progress + np.minimum(self.collision_impact * 0.01, 1)
+        return (progress + np.minimum(self.collision_impact / self.config.get("vel_scale", 1), 1)
             ) * (1 - self.config["gamma"])# - self.win_mask.astype(float)
     
     def get_positions(self) -> np.ndarray:

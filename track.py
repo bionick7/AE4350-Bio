@@ -305,6 +305,7 @@ class Track:
         N = len(self.segments)
         for i in range(N):
             self.adjacencies.append([(i+1) % N, (i-1) % N])
+        self.track_length = sum([x.length for x in self.segments])
 
     def get_input(self, states: np.ndarray, N_rays: int, R: np.ndarray=np.eye(2)[np.newaxis,:,:]) -> tuple[np.ndarray, np.ndarray]:
         ''' Returns sensor readings evaluated at a certain point 
@@ -400,7 +401,12 @@ class Track:
                 covered_length += self.segments[i].length
         return res
 
-    def show(self, state: np.ndarray, u: np.ndarray):
+    def show(self, state: np.ndarray, rot: np.ndarray):
+        '''
+            state: N x 5
+            rot: N
+            Shows the track and states with raylib (u is shown as rotation)
+        '''
         for seg in self.segments:
             seg.draw()
 
@@ -411,17 +417,42 @@ class Track:
             rl.draw_circle(int(pos[0]), int(pos[1]), 4.0, HIGHLIGHT)
             
             pos2 = pos + state[i,2:4]
-            upos2 = pos + np.array([cos(u[i]), sin(u[i])]) * 20
+            upos2 = pos + np.array([cos(rot[i]), sin(rot[i])]) * 20
             rl.draw_line(int(pos[0]), int(pos[1]), int(pos2[0]), int(pos2[1]), FG)
             rl.draw_line(int(pos[0]), int(pos[1]), int(upos2[0]), int(upos2[1]), HIGHLIGHT)
 
-    def evaluate_path(self, spawns: np.ndarray) -> np.ndarray:
-        spawns = np.mod(spawns, len(self.segments))
-        positions = np.zeros((len(spawns), 2))
-        segment_indecies = (np.floor(spawns) % len(self.segments)).astype(np.int32)
+    def evaluate_path(self, track_positions: np.ndarray) -> np.ndarray:
+        '''
+            Converts from along-track positions to cartesian coordinates, 
+            assuming accross-track is 0 (track center)
+            N => N x 2
+        '''
+        track_positions = np.mod(track_positions, len(self.segments))
+        positions = np.zeros((len(track_positions), 2))
+        segment_indecies = (np.floor(track_positions) % len(self.segments)).astype(np.int32)
         for i, segment in enumerate(self.segments):
-            positions[segment_indecies==i] = segment.evaluate_points(spawns[segment_indecies==i]-i)
+            positions[segment_indecies==i] = segment.evaluate_points(track_positions[segment_indecies==i]-i)
         return positions
+    
+    def track_to_cartesian_coords(self, track_coordiantes: np.ndarray) -> np.ndarray:
+        '''
+            N x 2 => N x 2
+        '''
+        along_track, accross_track = track_coordiantes.T
+        
+        along_track = np.mod(along_track, self.track_length)
+                
+        mid_positions = track_coordiantes*0
+        normals = track_coordiantes*0
+        covered_length = 0
+        for segment in self.segments:
+            position_on_track = (along_track - covered_length) / segment.length
+            mask = np.logical_and(position_on_track >= 0, position_on_track < 1)
+            mid_positions[mask] = segment.evaluate_points(position_on_track[mask])
+            normals[mask] = segment.get_tangent_at(mid_positions[mask])[:,[1,0]] * np.array([[1,-1]])
+            covered_length += segment.length
+
+        return mid_positions + normals * accross_track[:,np.newaxis]
 
     def show_player_rays(self, state: np.ndarray, N_rays: int):
         '''

@@ -88,10 +88,14 @@ class Visualization:
         rl.close_window()
 
 
-def visualize_adhdp(track: Track, adhdp: ADHDP, run_label: str, population: int, constrain_weights: bool):
-    vis = Visualization(track, run_label)
-    adhdp.actor_save_path = "actor_" + run_label + ".dat"
-    adhdp.critic_save_path = "critic_" + run_label + ".dat"
+def visualize_adhdp(track: Track, adhdp: ADHDP, run_label: str|None, population: int, constrain_weights: bool):
+    vis = Visualization(track, run_label if run_label is not None else "default")
+    if run_label is None:
+        adhdp.actor_save_path = None
+        adhdp.critic_save_path = None
+    else:
+        adhdp.actor_save_path = "norays_rot/actor_" + run_label + ".dat"
+        adhdp.critic_save_path = "norays_rot/critic_" + run_label + ".dat"
 
     win_condition = 1
     if constrain_weights:
@@ -159,7 +163,8 @@ def visualize_adhdp(track: Track, adhdp: ADHDP, run_label: str, population: int,
                 adhdp.actor_weight_mask = np.append(np.exp(-np.square(centers_track_positions - win_condition)), 0)
             #print("New win condition:", win_condition)
     
-    np.savetxt("results/learning_" + run_label + ".dat", learning)
+    if run_label is not None:
+        	np.savetxt("results/learning_" + run_label + ".dat", learning)
     adhdp.save_networks()
     
     vis.close()

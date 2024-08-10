@@ -54,12 +54,13 @@ def run_with_maxvel(max_vel: float):
     track = Track("editing/track1.txt")
     
     adhdp = ADHDP(*generate_networks(), population)
-    adhdp.actor.load_weights_from("norays_rot/actor_prepped.dat")
-    adhdp.critic.load_weights_from("norays_rot/critic.dat")
-    adhdp.u_offsets = np.random.normal(0, 0.1, (population, 1))
+    #adhdp.actor.load_weights_from("norays_rot/actor_prepped.dat")
+    adhdp.actor.load_weights_from("norays_rot/actor_mvel70_stepped.dat")
+    #adhdp.critic.load_weights_from("norays_rot/critic_mvel70_stepped.dat")
+    adhdp.u_offsets = np.random.normal(0, 0.2, (population, 1))
     #adhdp.u_offsets[0] = 0
     adhdp.gamma = GAMMA
-    adhdp.state_config = { "max_vel": max_vel, "vel_scale": 100, "force": 100 }
+    adhdp.state_config = { "max_vel": max_vel, "vel_scale": 200, "force": 100 }
 
     adhdp.train_actor = True
     adhdp.train_critic = True
@@ -72,7 +73,8 @@ def run_with_maxvel(max_vel: float):
     #test_states = TrackStateRot(track, gen_state(track, population, False))
     #test_states.check_dsdu(1)
 
-    visualize_adhdp(track, adhdp, "mvel" + str(max_vel) + "_r3", population, True)
+    visualize_adhdp(track, adhdp, "mvel" + str(max_vel) + "_stepped", population, True)
+    #visualize_adhdp(track, adhdp, None, population, True)
     #adhdp.plot_critic_gradient(0,1, 0)
     #adhdp.plot_actor_critic(0,1)
     #plt.show()
@@ -92,7 +94,7 @@ def pretrain():
     adhdp.train_critic = True
     adhdp.train_actor_on_initial = True
 
-    adhdp.actor_save_path = "norays_rot/actor_prepped_ffnn.dat"
+    adhdp.actor_save_path = "norays_rot/actor_prepped.dat"
     adhdp.critic_save_path = "norays_rot/critic.dat"
     
     adhdp.use_plant = False
@@ -112,9 +114,9 @@ def pretrain():
             error += E/EPOCH_SIZE
         print(error)
 
-    visualize(track, adhdp, population, False)
-    adhdp.plot_critic_gradient(0,1, 0)
-    adhdp.plot_actor_critic(0,1)
+    #visualize(track, adhdp, population, False)
+    #adhdp.plot_critic_gradient(0,1, 0)
+    #adhdp.plot_actor_critic(0,1)
     plt.show()
 
 
@@ -149,5 +151,6 @@ def post_train():
 
 if __name__ == "__main__":
     #pretrain()
-    for mvel in [50, 100, np.inf]:
-        run_with_maxvel(mvel)
+    run_with_maxvel(100)
+    #for mvel in [50, 100, np.inf]:
+    #    run_with_maxvel(mvel)
