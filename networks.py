@@ -3,6 +3,7 @@ from typing import Callable
 from math import prod
 from copy import copy, deepcopy
 
+import os.path
 import numpy as np
 
 def levenberg_marquardt(grad: np.ndarray, e: np.ndarray, mu: float):
@@ -29,10 +30,10 @@ class Network:
 
     def load_weights_from(self, filepath: str):
         self.weights *= 0
-        self.update_weights(np.loadtxt(filepath))
+        self.update_weights(np.loadtxt(os.path.join("saved_networks", filepath)))
     
     def save_weights_to(self, filepath: str):
-        np.savetxt(filepath, self.weights)
+        np.savetxt(os.path.join("saved_networks", filepath), self.weights)
 
     def learn_gd(self, beta: float, input: np.ndarray|float, expected_output: np.ndarray|float
                  ) -> tuple[np.ndarray, float]:
@@ -121,7 +122,7 @@ class RBFNN(Network):
         return dy_dv @ dv_din
 
     @classmethod
-    def grid_spaced(cls, output_size: int, *spacings: np.ndarray,
+    def grid_spaced(cls, output_size: int, *spacings: np.ndarray, stdev_mult: float=1.5,
                     w_clamp: tuple[float, float]=(-1,1), b_clamp: tuple[float, float]=(-1,1)) -> RBFNN:
         ''' Assumes equal spacing '''
         input_size = len(spacings)
@@ -132,7 +133,7 @@ class RBFNN(Network):
         stdevs = np.zeros(input_size)
         for i, spacing in enumerate(spacings):
             stdevs[i] = (np.max(spacing) - np.min(spacing)) / len(spacing)
-        res.set_rbfs(centers, np.ones(centers.shape) * stdevs*1.5)
+        res.set_rbfs(centers, np.ones(centers.shape) * stdevs*stdev_mult)
         return res
 
 class Layer:
@@ -181,6 +182,12 @@ class Layer:
         return cls(size, "tanh",
                    lambda x: np.tanh(x), 
                    lambda x, f: 1-f*f)
+    
+    @classmethod
+    def sin(cls, size: int, omega:float=np.pi) -> Layer:
+        return cls(size, "tanh",
+                   lambda x: np.sin(x*omega), 
+                   lambda x, f: np.cos(x*omega)*omega)
     
 
     def __copy__(self) -> Layer:
@@ -376,9 +383,9 @@ def check_weight_gradients(nn: Network, show:bool=False) -> bool:
         for weight_index in range(len(J[output_index])):
             w = nn.weights[weight_index]
             nn.weights[weight_index] = w + EPSILON
-            y_plus = nn.eval(inp)[output_index,0]
+            y_plus = nn.eval(inp)[output_index]
             nn.weights[weight_index] = w - EPSILON
-            y_minus = nn.eval(inp)[output_index,0]
+            y_minus = nn.eval(inp)[output_index]
             nn.weights[weight_index] = w
             finite_diff = (y_plus - y_minus) / (2*EPSILON)
             if show:
@@ -411,7 +418,7 @@ def check_io_gradients(nn: Network, show:bool=False) -> bool:
             if discrepency > 3e-3:
                 print(f"Discrepency ({discrepency}) to finite differencees (IO) found:")
                 return False
-
+    print("IO gradient checks out")
     return True
 
 
@@ -469,7 +476,7 @@ def sin_test(nn: Network) -> None:
     sample_xx = np.linspace(-7, 7, 1000)
     sample_yy = np.zeros(1000)
     for i in range(1000):
-        sample_yy[i] = nn.eval(sample_xx[i,np.newaxis])[0,0]
+        sample_yy[i] = nn.eval(sample_xx[i,np.newaxis])[0]
     ax1.plot(sample_xx, sample_yy)
     ax1.plot(sample_xx, np.sin(sample_xx))
     ax1.scatter(learning_xx, np.sin(learning_xx))
