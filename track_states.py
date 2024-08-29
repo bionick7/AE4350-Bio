@@ -231,6 +231,7 @@ class TrackStateRot(ADHDPState):
         self.collision_mask = self.internal_state[:,0] != self.internal_state[:,0]
         self.win_condition: float = 4
         self.reset = self.internal_state[:,0] != self.internal_state[:,0]
+        self.cartesian_offset = np.zeros((len(self), 2))
     
     def get_initial_control(self) -> np.ndarray:
         tangents = self.track.get_path_dir(self.internal_state)
@@ -244,6 +245,7 @@ class TrackStateRot(ADHDPState):
         force = np.zeros((len(self), 2))
         force[:,0] = np.cos(u[:,0]) * self.config.get("force", 1)
         force[:,1] = np.sin(u[:,0]) * self.config.get("force", 1)
+        force += self.cartesian_offset * self.config.get("force", 1)
         next_states[:,:2] = self.internal_state[:,:2] + force * dt*dt*0.5 + self.internal_state[:,2:4] * dt
         next_states[:,2:4] = self.internal_state[:,2:4] + force * dt
         next_states[:,4] = self.internal_state[:,4]
@@ -283,6 +285,7 @@ class TrackStateRot(ADHDPState):
         res.collision_mask = collision_mask
         res.win_mask = win_mask
         res.win_condition = self.win_condition
+        res.cartesian_offset = self.cartesian_offset
         return res
 
     def get_s(self) -> np.ndarray:

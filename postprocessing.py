@@ -246,6 +246,83 @@ def plot_learning_curve(filename: str|None=None):
         fig.savefig(filename)
 
 
+def sensitivity_u(track: Track, max_vel: float,
+                  actor_weights_file: str, critic_weights_file: str) -> tuple[list, list]:
+
+    # Load networks
+    actor_nn, critic_nn, _ = generate_networks()
+    actor_nn.load_weights_from(actor_weights_file)
+    critic_nn.load_weights_from(critic_weights_file)
+
+    mrs_errors = []
+    deviations = []
+
+    # Initialize trackstates
+    for noise_index, noise in enumerate((0.1,)):
+        population = 50
+
+        offsets = np.random.normal(0, noise, (population, 2))
+        offsets[0] *= 0  # Take 0-th path as reference path
+        
+        initial = np.zeros((population, 5))
+        initial[:,:2] = track.evaluate_path(np.ones(population))
+        #initial[:,1] += np.linspace(-.5, .5, population+2)[1:-1] * track.track_width
+        initial[:,4] = np.ones(population)
+        states = TrackStateRot(track, initial)
+        states.cartesian_offset = offsets
+        states.config = {"max_vel": max_vel, "force": 100}
+
+        # Evaluate paths
+        paths = np.zeros((population, 40, 2))
+        path_us = np.zeros((population, 40))
+        for i in range(40):
+            paths[:,i] = states.get_s()
+            for j in range(population):
+                path_us[j, i] = actor_nn.eval(paths[j,i])[0]
+                #path_us[j, i] += offsets[j,0]
+            states = states.step_forward(path_us[:, i, np.newaxis], 0.5)
+            states.config = {"max_vel": max_vel, "force": 100}
+
+        # Transform to cartesian coordinates
+        paths_path_coordinates = paths * np.array([[[track.track_length/2, track.track_width/2]]])
+        paths_path_coordinates[:,:,0] += track.track_length/2
+        paths_cartesian = np.zeros(paths.shape)
+        for i in range(population):
+            paths_cartesian[i] = track.track_to_cartesian_coords(paths_path_coordinates[i])
+
+            mrs_error = np.sqrt(np.mean(np.square(paths_cartesian[i] - paths_cartesian[0])))
+            deviation = np.linalg.norm(offsets[i])
+            reach = states.internal_state[i,4] / 4
+            mrs_errors.append(reach)
+            deviations.append(deviation)
+            #ax.plot(paths_cartesian[i,:,0], paths_cartesian[i,:,1])
+    
+    return deviations, mrs_errors
+
+
+def sensitivity_graph_both(track: Track, filename: str|None=None):
+    fig = plt.figure()
+    ax = fig.subplots(1, 1)
+    if not isinstance(ax, Axes): return
+
+    xx_50, yy_50 = sensitivity_u(track, 50, "final/actor_mvel50_r2.dat", "final/critic_mvel50_r2.dat")
+    xx_inf, yy_inf = sensitivity_u(track, np.inf, "final/actor_mvelinf_r3.dat", "final/critic_mvelinf_r3.dat")
+
+    ax.plot(xx_50, yy_50, 'rx', label="$v_{max} = 50 m/s$")
+    ax.plot(xx_inf, yy_inf, 'go', label="$v_{max} = \\infty$")
+    
+    ax.set_ylabel("Progress")
+    ax.set_xlabel("Magnitude of relative acceleration pertutrbation")
+    ax.set_ylim((0, 1.3))
+    ax.grid()
+    ax.legend()
+
+    fig.tight_layout()
+    if filename is not None:
+        fig.savefig(filename)
+
+    
+
 def print_run_table_latex():
     template = (r"\begin{{tabular}}{{|l|c|c|c|}} \hline" "\n"
                 r"                       & Run 1 & Run 2 & Run 3 \\ \hline" "\n"
@@ -268,8 +345,12 @@ def main():
     #show_actor_rbfs(track, "results/track_rbf_distribution.png")
     #show_actorcritic_track(track, 50, "final/actor_mvel50_r2.dat", "final/critic_mvel50_r2.dat", "results/mvel50_r2_heigtmaps.png")
     #show_actorcritic_track(track, np.inf, "final/actor_mvelinf_r3.dat", "final/critic_mvelinf_r3.dat", "results/mvelinf_r3_heigtmaps.png")
-    show_critic_derivative_u(track, "final/actor_mvelinf_r3.dat", "final/critic_mvelinf_r3.dat")
-    show_critic_derivative_u(track, "final/actor_mvel50_r2.dat", "final/critic_mvel50_r2.dat")
+    
+    #show_critic_derivative_u(track, "final/actor_mvelinf_r3.dat", "final/critic_mvelinf_r3.dat")
+    #show_critic_derivative_u(track, "final/actor_mvel50_r2.dat", "final/critic_mvel50_r2.dat")
+    
+    sensitivity_graph_both(track, "results/sensitivity.png")
+    
     #plot_learning_curve("results/learning_curve.png")
     #print_run_table_latex()
 
